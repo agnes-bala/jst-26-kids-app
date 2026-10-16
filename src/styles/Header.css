@@ -1,0 +1,175 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.header {
+  width: 100%;
+  height: 90px;
+  background: #ffffff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 40px;
+  box-shadow: 0 2px 15px rgba(0,0,0,0.08);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.logo-icon {
+  font-size: 45px;
+  color: #6a2cff;
+  background: #f3ecff;
+  padding: 10px;
+  border-radius: 12px;
+}
+
+.logo h2 {
+  font-size: 20px;
+  color: #6a2cff;
+}
+
+.logo p {
+  font-size: 10px;
+  color: gray;
+  margin-top: 4px;
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: 25px;
+}
+
+nav a {
+  text-decoration: none;
+  color: #555;
+  font-size: 17px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 15px;
+  transition: .3s;
+}
+
+nav a:hover {
+  color: #6a2cff;
+}
+
+/* nav a.active {
+  color: #6a2cff;
+  border-bottom: 3px solid #6a2cff;
+} */
+ nav{
+    display:flex;
+    align-items:center;
+    gap:30px;
+}
+
+.nav-link{
+    position:relative;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    text-decoration:none;
+    color:#666;
+    font-size:17px;
+    font-weight:600;
+    padding:32px 0;
+    transition:.3s;
+}
+
+.nav-link:hover{
+    color:#6C63FF;
+}
+
+.nav-link.active{
+    color:#6C63FF;
+}
+
+.nav-link.active::after{
+    content:"";
+    position:absolute;
+    left:0;
+    bottom:0;
+    width:100%;
+    height:4px;
+    background:#6C63FF;
+    border-radius:10px 10px 0 0;
+    animation:line .25s ease;
+}
+
+@keyframes line{
+    from{
+        width:0;
+    }
+    to{
+        width:100%;
+    }
+}
+
+.logout-btn {
+  border: none;
+  background: #f3ecff;
+  color: #6a2cff;
+  padding: 12px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logout-btn:hover {
+  background: #6a2cff;
+  color: white;
+}
+.nav-link{
+    position:relative;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    text-decoration:none;
+    color:#707070;
+    font-size:17px;
+    font-weight:600;
+    padding:28px 5px;
+    transition:.3s;
+}
+
+.nav-link:hover{
+    color:#6C63FF;
+}
+
+.nav-link.active{
+    color:#6C63FF;
+}
+
+.nav-link.active::after{
+    content:"";
+    position:absolute;
+    left:0;
+    bottom:0;
+    width:100%;
+    height:4px;
+    background:#6C63FF;
+    border-radius:20px;
+    animation:slide .3s;
+}
+
+@keyframes slide{
+from{
+    width:0;
+}
+to{
+    width:100%;
+}
+}

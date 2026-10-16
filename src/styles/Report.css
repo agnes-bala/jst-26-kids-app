@@ -1,0 +1,860 @@
+/* ── Reset / base ── */
+.report-page {
+      zoom: 0.8;
+  min-height: 100vh;
+  background-color: #f8f7ff;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.header-fixed {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.content-wrapper {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  padding-top: 100px;
+}
+
+/* ── Page Header ── */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.header-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background-color: #ede9fe;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.header-subtitle {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+  margin-top: 2px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn-excel,
+.btn-refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-excel {
+  background-color: #7c3aed;
+  color: white;
+}
+
+.btn-refresh {
+  background-color: white;
+  color: #374151;
+  border: 1.5px solid #e5e7eb;
+}
+
+/* ── Filters ── */
+.filters-card {
+  background-color: white;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+
+.filters-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.filters-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #282c36;
+}
+
+.clear-filters-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  color: #322d3b;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.filters-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+  gap: 14px;
+  align-items: end;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #222c3d;
+}
+
+.search-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  padding: 9px 12px 9px 34px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #374151;
+  outline: none;
+  box-sizing: border-box;
+  background-color: white;
+}
+
+.dropdown-wrapper {
+  position: relative;
+}
+
+.dropdown-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #374151;
+  background-color: white;
+  cursor: pointer;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.dropdown-btn-inner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background-color: white;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.dropdown-item {
+  padding: 9px 14px;
+  font-size: 13px;
+  color: #374151;
+  cursor: pointer;
+}
+
+.dropdown-item-hover {
+  background-color: #f3f0ff;
+  color: #7c3aed;
+}
+
+.btn-apply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #bbadd3;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  height: 38px;
+}
+
+/* ── Table ── */
+.table-card {
+  background-color: white;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  overflow: hidden;
+}
+
+.table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f3f4f6;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.table-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.table-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.total-badge {
+  background-color: #ede9fe;
+  color: #7c3aed;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
+.table-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.showing-text {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.per-page-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.per-page-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #374151;
+  background-color: white;
+  cursor: pointer;
+  outline: none;
+}
+
+.per-page-label {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.per-page-dropdown {
+  right: 0;
+  left: auto;
+  width: 80px;
+}
+
+/* ── Table responsive wrapper ── */
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.user-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 700px;
+}
+
+.user-table thead {
+  background-color: #fafafa;
+}
+
+.user-table th {
+  padding: 11px 16px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  border-bottom: 1px solid #f3f4f6;
+  white-space: nowrap;
+}
+
+.user-table td {
+  padding: 13px 16px;
+  font-size: 13px;
+  color: #374151;
+  border-bottom: 1px solid #f9fafb;
+  vertical-align: middle;
+}
+
+.user-table .col-sn {
+  width: 40px;
+  color: #6b7280;
+}
+
+.user-table .col-actions {
+  text-align: right;
+  width: 120px;
+}
+
+.user-table .row-alt {
+  background-color: #fafafa;
+}
+
+.user-name {
+  font-weight: 500;
+  color: #111827;
+}
+
+.icon-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.no-email {
+  color: #9ca3af;
+}
+
+.action-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.action-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.view-btn   { background-color: #f3f0ff; }
+.edit-btn   { background-color: #eff6ff; }
+.delete-btn { background-color: #fef2f2; }
+
+.no-data {
+  padding: 40px 20px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 16px;
+}
+
+/* ── Pagination ── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 20px;
+  flex-wrap: wrap;
+}
+
+.page-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1.5px solid #e5e7eb;
+  background-color: white;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page-btn.active {
+  border-color: #7c3aed;
+  background-color: #7c3aed;
+  color: white;
+}
+
+.page-nav {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1.5px solid #e5e7eb;
+  background-color: white;
+  color: #6b7280;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page-nav:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.page-dots {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+/* ────────────────────────────────────────────── */
+/* ─── RESPONSIVE BREAKPOINTS ────────────────── */
+/* ────────────────────────────────────────────── */
+
+/* Large tablets / small laptops (max-width: 1024px) */
+@media (max-width: 1024px) {
+  .content-wrapper {
+    padding: 1.5rem 1rem;
+    padding-top: 90px;
+  }
+
+  .filters-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .btn-apply {
+    grid-column: span 2;
+    justify-content: center;
+  }
+}
+
+/* NEW: 940px and below – fine-tune spacing and sizing */
+@media (max-width: 940px) {
+  .content-wrapper {
+    padding: 1.2rem 0.9rem;
+    padding-top: 85px;
+  }
+
+  .filters-row {
+    gap: 10px;
+  }
+
+  .filter-group {
+    gap: 4px;
+  }
+
+  .filter-label {
+    font-size: 12px;
+  }
+
+  .search-input,
+  .dropdown-btn {
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+
+  .search-input {
+    padding-left: 32px;
+  }
+
+  .btn-apply {
+    font-size: 13px;
+    padding: 8px 16px;
+    height: 36px;
+  }
+
+  .table-header {
+    padding: 12px 16px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .table-header-left,
+  .table-header-right {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .showing-text {
+    font-size: 12px;
+  }
+
+  .per-page-btn {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+
+  .per-page-label {
+    font-size: 12px;
+  }
+
+  .user-table td,
+  .user-table th {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  .user-table .col-sn {
+    width: 30px;
+  }
+
+  .user-table .col-actions {
+    width: 100px;
+  }
+
+  .action-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .action-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .pagination {
+    gap: 4px;
+    padding: 12px 14px;
+  }
+
+  .page-btn,
+  .page-nav,
+  .page-dots {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+  }
+
+  .no-data {
+    font-size: 14px;
+    padding: 30px 16px;
+  }
+
+  /* header buttons */
+  .btn-excel,
+  .btn-refresh {
+    font-size: 13px;
+    padding: 8px 14px;
+  }
+}
+
+/* Mobile (max-width: 768px) – already covered, keep as is */
+@media (max-width: 768px) {
+  .content-wrapper {
+    padding: 1rem 0.75rem;
+    padding-top: 80px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .header-right {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .btn-excel,
+  .btn-refresh {
+    flex: 1;
+    justify-content: center;
+    font-size: 13px;
+    padding: 8px 12px;
+  }
+
+  .header-title {
+    font-size: 18px;
+  }
+
+  .header-subtitle {
+    font-size: 12px;
+  }
+
+  .header-icon-box {
+    width: 36px;
+    height: 36px;
+  }
+
+  .filters-card {
+    padding: 14px 12px;
+  }
+
+  .filters-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .btn-apply {
+    grid-column: span 1;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .filter-label {
+    font-size: 12px;
+  }
+
+  .search-input,
+  .dropdown-btn {
+    font-size: 14px;
+    padding: 10px 12px;
+  }
+
+  .search-input {
+    padding-left: 36px;
+  }
+
+  .dropdown-menu {
+    max-height: 160px;
+  }
+
+  .table-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 12px 14px;
+  }
+
+  .table-header-left,
+  .table-header-right {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .showing-text {
+    font-size: 12px;
+  }
+
+  .user-table td,
+  .user-table th {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  .user-table .col-sn {
+    width: 30px;
+  }
+
+  .user-table .col-actions {
+    width: 100px;
+  }
+
+  .action-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .action-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .pagination {
+    gap: 4px;
+    padding: 12px 14px;
+  }
+
+  .page-btn,
+  .page-nav,
+  .page-dots {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+  }
+
+  .no-data {
+    font-size: 14px;
+    padding: 30px 16px;
+  }
+}
+
+/* Small phones (max-width: 480px) */
+@media (max-width: 480px) {
+  .content-wrapper {
+    padding: 0.75rem 0.5rem;
+    padding-top: 70px;
+  }
+
+  .header-title {
+    font-size: 16px;
+  }
+
+  .header-subtitle {
+    font-size: 11px;
+  }
+
+  .btn-excel,
+  .btn-refresh {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+
+  .btn-excel svg,
+  .btn-refresh svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .filters-card {
+    padding: 10px 8px;
+  }
+
+  .filters-title {
+    font-size: 14px;
+  }
+
+  .clear-filters-btn {
+    font-size: 12px;
+  }
+
+  .search-input,
+  .dropdown-btn {
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+
+  .search-input {
+    padding-left: 32px;
+  }
+
+  .table-header {
+    padding: 10px 10px;
+  }
+
+  .table-title {
+    font-size: 14px;
+  }
+
+  .total-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+  }
+
+  .per-page-btn {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+
+  .per-page-label {
+    font-size: 12px;
+  }
+
+  .user-table td,
+  .user-table th {
+    padding: 8px 8px;
+    font-size: 11px;
+  }
+
+  .user-table .col-sn {
+    width: 24px;
+  }
+
+  .user-table .col-actions {
+    width: 80px;
+  }
+
+  .action-btn {
+    width: 24px;
+    height: 24px;
+  }
+
+  .action-btn svg {
+    width: 11px;
+    height: 11px;
+  }
+
+  .pagination {
+    gap: 3px;
+    padding: 10px 8px;
+  }
+
+  .page-btn,
+  .page-nav,
+  .page-dots {
+    width: 24px;
+    height: 24px;
+    font-size: 11px;
+  }
+
+  .no-data {
+    font-size: 13px;
+    padding: 20px 12px;
+  }
+}
