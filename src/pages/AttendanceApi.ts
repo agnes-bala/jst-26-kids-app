@@ -1,9 +1,3 @@
-// src/pages/AttendanceApi.ts
-// One shared data layer for Attendance, Child Report, Child Analytics and Follow-up.
-//
-// A past Sunday never changes, so it is fetched ONCE and stored in localStorage.
-// Only today's list is re-fetched (short in-memory cache).
-
 export const API_BASE_URL = "/api";
 export const KIDS_URL = `${API_BASE_URL}/kids`;
 export const ATTENDANCE_URL = `${API_BASE_URL}/attendance`;

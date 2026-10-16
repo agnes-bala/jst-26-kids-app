@@ -100,7 +100,7 @@ function Login() {
 
       setMessage("Login Successfully");
       setIsSuccess(true);
-      navigate("/home");
+      navigate("/attendance"); // Redirect to the AddChild page after successful login
     } catch (error) {
       console.error("Login error:", error);
       setMessage("Something went wrong. Please try again.");
