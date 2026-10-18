@@ -484,7 +484,7 @@ export default function Header() {
                         {link.icon}
                         {link.label}
                         <ChevronDownIcon isOpen={open} />
-                      </button>
+                      </button>.
                       {open && (
                         <div style={s.submenuDropdown} role="menu">
                           {children.map((sub) => (

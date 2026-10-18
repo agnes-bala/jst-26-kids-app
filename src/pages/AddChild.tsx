@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { CSSProperties, ChangeEvent, KeyboardEvent } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { createPortal } from "react-dom";
@@ -760,9 +760,10 @@ export default function ChildAdd() {
     register,
     handleSubmit,
     reset,
+    control,
     getValues,
     setValue,
-    watch,
+    // watch,
     formState: { errors },
   } = useForm<ChildFormValues>({
     resolver: zodResolver(childSchema),
@@ -771,7 +772,7 @@ export default function ChildAdd() {
 
   const isEdit = editId !== null;
   const shownPhoto = photoPreview || existingPhoto;
-  const placeValue = watch("address1") ?? "";
+  const placeValue = useWatch({ control, name: "address1" }) ?? "";
 
   useEffect(() => {
     return () => {

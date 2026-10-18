@@ -628,7 +628,7 @@ export default function FollowUp() {
                             </div>
                           </td>
                           <td className="fu-hide-md">
-                            <span className="fu-id" title={r.kid.id}>{r.kid.id.slice(0, 8)}</span>
+                         <span className="fu-id" title={r.kid.id}>{r.kid.id}</span>
                           </td>
                           <td className="fu-hide-sm">
                             {r.kid.mobile ? (
@@ -734,7 +734,7 @@ export default function FollowUp() {
               </div>
             )}
           </div>
-        </div>
+        </div>  
       </div>
     </div>
   );

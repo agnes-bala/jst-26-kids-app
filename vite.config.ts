@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
   // Load .env / .env.local / .env.[mode] into process.env
   const env = loadEnv(mode, process.cwd(), '')
 
-  const BACKEND = env.SERVICE_URL || env.VITE_SERVICE_URL || 'http://10.12.1.118:8081'
+  const BACKEND = env.SERVICE_URL || env.VITE_SERVICE_URL || 'http://10.12.1.122:8081'
 
   const proxyOptions: ProxyOptions = {
     target: BACKEND,
