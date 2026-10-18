@@ -11,11 +11,15 @@ export interface ApiKid {
   std?: string | null;
   religion?: string | null;
   selfNo?: string | null;
+  motherNo?: string | null;
+  fatherNo?: string | null;
+  // older field names – kept as fallback in case the API still sends them
   momNo?: string | null;
   dadNo?: string | null;
   guardianNo?: string | null;
   address1?: string | null;
   address2?: string | null;
+  city?: string | null;
   state?: string | null;
   createdAt?: string | null;
 }
@@ -23,6 +27,7 @@ export interface ApiKid {
 export interface ApiPresentItem {
   kidsId?: string;
   inTime?: string | null;
+  outTime?: string | null;
   status?: string;
 }
 
@@ -35,19 +40,26 @@ export interface Kid {
   std: string; // raw value from the API ("3", "LKG" ...)
   mobile: string; // best available number
   selfNo: string;
-  momNo: string;
-  dadNo: string;
+  motherNo: string;
+  fatherNo: string;
   guardianNo: string;
   address1: string;
   address2: string;
+  city: string;
   state: string;
   place: string;
   religion: string;
   createdDate: string; // yyyy-mm-dd or ""
 }
 
-// kidsId -> check-in time ("HH:mm", "" when unknown). A key means "present".
-export type PresentMap = Record<string, string>;
+// Times of one child on one date ("HH:mm", "" when unknown / not checked out)
+export interface PresentInfo {
+  inTime: string;
+  outTime: string;
+}
+
+// kidsId -> times. A key means "present".
+export type PresentMap = Record<string, PresentInfo>;
 
 // ─── Small helpers ──────────────────────────────────────────────────────
 export const pad = (n: number) => String(n).padStart(2, "0");
@@ -56,6 +68,9 @@ export const isoDate = (d: Date) =>
   `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 export const todayIso = () => isoDate(new Date());
 
+export const isSunday = (iso: string) =>
+  new Date(`${iso}T00:00:00`).getDay() === 0;
+
 export const weekBefore = (iso: string) => {
   const d = new Date(`${iso}T00:00:00`);
   d.setDate(d.getDate() - 7);
@@ -63,8 +78,18 @@ export const weekBefore = (iso: string) => {
 };
 
 const MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
 ];
 export const formatDate = (iso: string) => {
   if (!iso) return "—";
@@ -72,7 +97,7 @@ export const formatDate = (iso: string) => {
   return `${d} ${MONTHS[Number(m) - 1]} ${y}`;
 };
 
-export const toArray = <T,>(data: unknown): T[] => {
+export const toArray = <T>(data: unknown): T[] => {
   if (Array.isArray(data)) return data as T[];
   const obj = data as { content?: T[]; data?: T[] } | null;
   return obj?.content ?? obj?.data ?? [];
@@ -97,24 +122,29 @@ export const stdOrder = (std?: string | null) => {
   return 150;
 };
 
-export const toKid = (k: ApiKid): Kid => ({
-  id: k.kidsId,
-  name: k.name,
-  gender: k.gender === "Male" || k.gender === "Female" ? k.gender : "",
-  age: Number(k.age) || 0,
-  std: k.std || "",
-  mobile: k.selfNo || k.dadNo || k.momNo || k.guardianNo || "",
-  selfNo: k.selfNo || "",
-  momNo: k.momNo || "",
-  dadNo: k.dadNo || "",
-  guardianNo: k.guardianNo || "",
-  address1: k.address1 || "",
-  address2: k.address2 || "",
-  state: k.state || "",
-  place: k.address2 || k.address1 || k.state || "—",
-  religion: k.religion || "Not specified",
-  createdDate: k.createdAt ? String(k.createdAt).slice(0, 10) : "",
-});
+export const toKid = (k: ApiKid): Kid => {
+  const motherNo = k.motherNo || k.momNo || "";
+  const fatherNo = k.fatherNo || k.dadNo || "";
+  return {
+    id: k.kidsId,
+    name: k.name,
+    gender: k.gender === "Male" || k.gender === "Female" ? k.gender : "",
+    age: Number(k.age) || 0,
+    std: k.std || "",
+    mobile: k.selfNo || fatherNo || motherNo || k.guardianNo || "",
+    selfNo: k.selfNo || "",
+    motherNo,
+    fatherNo,
+    guardianNo: k.guardianNo || "",
+    address1: k.address1 || "",
+    address2: k.address2 || "",
+    city: k.city || "",
+    state: k.state || "",
+    place: k.address2 || k.address1 || k.city || k.state || "—",
+    religion: k.religion || "Not specified",
+    createdDate: k.createdAt ? String(k.createdAt).slice(0, 10) : "",
+  };
+};
 
 export const readError = async (res: Response, fallback: string) => {
   const raw = await res.text().catch(() => "");
@@ -128,20 +158,24 @@ export const readError = async (res: Response, fallback: string) => {
   return `${fallback} (HTTP ${res.status}${msg ? `: ${msg}` : ""})`;
 };
 
-// today + the last N Sundays, newest first
+// today + yesterday + the last N Sundays, newest first (no duplicates)
 export const recentSessionDates = (weeks: number): string[] => {
-  const out: string[] = [];
+  const set = new Set<string>();
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  const today = isoDate(d);
-  out.push(today);
-  while (d.getDay() !== 0) d.setDate(d.getDate() - 1);
+
+  set.add(isoDate(d)); // today
+
+  const y = new Date(d);
+  y.setDate(y.getDate() - 1);
+  set.add(isoDate(y)); // previous day
+
+  while (d.getDay() !== 0) d.setDate(d.getDate() - 1); // back to latest Sunday
   for (let i = 0; i < weeks; i++) {
-    const iso = isoDate(d);
-    if (iso !== today) out.push(iso);
+    set.add(isoDate(d));
     d.setDate(d.getDate() - 7);
   }
-  return out;
+  return Array.from(set).sort().reverse();
 };
 
 // Phone number for wa.me links (10 digits -> India +91)
@@ -160,7 +194,8 @@ export const loadKids = (): Promise<Kid[]> => {
   kidsAt = Date.now();
   kidsPromise = (async () => {
     const res = await fetch(KIDS_URL);
-    if (!res.ok) throw new Error(await readError(res, "Could not load children"));
+    if (!res.ok)
+      throw new Error(await readError(res, "Could not load children"));
     const raw = toArray<ApiKid>(await res.json().catch(() => []));
     return Array.from(new Map(raw.map((k) => [k.kidsId, toKid(k)])).values());
   })();
@@ -170,15 +205,22 @@ export const loadKids = (): Promise<Kid[]> => {
   return kidsPromise;
 };
 
-// ─── Attendance per date (past Sundays are cached for good) ─────────────
-const LS_PREFIX = "att:present:v1:";
+// ─── Attendance per date (past dates with data are cached for good) ─────
+// v2: values are { inTime, outTime } (v1 stored only the check-in time)
+const LS_PREFIX = "att:present:v2:";
 const TODAY_TTL = 10_000;
 const mem = new Map<string, { at: number; p: Promise<PresentMap> }>();
 
 const readStored = (date: string): PresentMap | null => {
   try {
     const raw = localStorage.getItem(LS_PREFIX + date);
-    return raw ? (JSON.parse(raw) as PresentMap) : null;
+    if (!raw) return null;
+    const map = JSON.parse(raw) as PresentMap;
+    // ignore empty / old-format entries so they get refetched
+    if (!map || Object.keys(map).length === 0) return null;
+    const first = Object.values(map)[0] as unknown;
+    if (typeof first !== "object" || first === null) return null;
+    return map;
   } catch {
     return null;
   }
@@ -190,6 +232,8 @@ const writeStored = (date: string, map: PresentMap) => {
     /* storage full or unavailable – just skip caching */
   }
 };
+
+const hhmm = (t?: string | null) => (t ? String(t).slice(0, 5) : "");
 
 export const getPresent = (date: string): Promise<PresentMap> => {
   const isPast = date < todayIso();
@@ -208,9 +252,10 @@ export const getPresent = (date: string): Promise<PresentMap> => {
     list.forEach((it) => {
       if (!it.kidsId) return;
       if (it.status && it.status.toUpperCase() !== "PRESENT") return;
-      map[it.kidsId] = it.inTime ? String(it.inTime).slice(0, 5) : "";
+      map[it.kidsId] = { inTime: hhmm(it.inTime), outTime: hhmm(it.outTime) };
     });
-    if (isPast) writeStored(date, map);
+    // never cache an empty day – it may just be a hiccup
+    if (isPast && Object.keys(map).length > 0) writeStored(date, map);
     return map;
   })();
   mem.set(date, { at: Date.now(), p });
@@ -245,9 +290,45 @@ export const clearAttendanceCaches = () => {
   mem.clear();
   try {
     Object.keys(localStorage)
-      .filter((k) => k.startsWith(LS_PREFIX))
+      .filter((k) => k.startsWith("att:present:"))
       .forEach((k) => localStorage.removeItem(k));
   } catch {
     /* ignore */
   }
+};
+
+// ─── Follow-up "contacted" marks (stored on the server, not in the browser) ─
+// ASSUMED endpoints – change to match your backend:
+//   GET  /api/attendance/followup/contacted  -> [{ kidsId, contactedDate }]
+//   POST /api/attendance/followup/contacted  body { kidsId, contactedDate }
+export const CONTACTED_URL = `${ATTENDANCE_URL}/followup/contacted`;
+
+interface ApiContacted {
+  kidsId?: string;
+  contactedDate?: string | null;
+}
+
+// kidsId -> yyyy-mm-dd (latest contact date)
+export const loadContacted = async (): Promise<Record<string, string>> => {
+  const res = await fetch(CONTACTED_URL);
+  if (!res.ok)
+    throw new Error(await readError(res, "Could not load contacted list"));
+  const list = toArray<ApiContacted>(await res.json().catch(() => []));
+  const map: Record<string, string> = {};
+  list.forEach((it) => {
+    if (!it.kidsId || !it.contactedDate) return;
+    const d = String(it.contactedDate).slice(0, 10);
+    if (!map[it.kidsId] || d > map[it.kidsId]) map[it.kidsId] = d;
+  });
+  return map;
+};
+
+export const saveContacted = async (kidsId: string, contactedDate: string) => {
+  const res = await fetch(CONTACTED_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kidsId, contactedDate }),
+  });
+  if (!res.ok)
+    throw new Error(await readError(res, "Could not save contacted mark"));
 };

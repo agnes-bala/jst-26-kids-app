@@ -225,12 +225,13 @@ export default function Header() {
 
     // Children section – separate from Content Management
     {
-      label: "Children",
+      label: "Manage",
       icon: <UsersIcon />,
       children: [
-        { href: "/attendance", label: "Attendance" },
         { href: "/addChild", label: "Add Child" },
+        { href: "/attendance", label: "Attendance" },        
         { href: "/followUp", label: "Follow-up" },
+        { href: "/staff", label: "Staff" },
       ],
     },
     { href: "/childReport", label: "Report", icon: <ReportIcon /> },
@@ -456,8 +457,7 @@ export default function Header() {
               </svg>
             </div>
             <div style={{ display: "flex", flexDirection: "column" }}>
-              <p style={s.brandTitle}>JR App Management</p>
-              <p style={s.brandSub}>User Details System</p>
+              <p style={s.brandTitle}>JST Kids Management</p>            
             </div>
           </Link>
 

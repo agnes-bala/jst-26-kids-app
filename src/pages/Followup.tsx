@@ -10,6 +10,9 @@ import {
   stdLabel,
   waNumber,
   todayIso,
+  isSunday,
+  loadContacted,
+  saveContacted,
 } from "./AttendanceApi";
 import type { Kid, PresentMap } from "./AttendanceApi";
 
@@ -30,16 +33,6 @@ type TabKey = "followup" | "streak" | "new";
 
 const DEFAULT_MESSAGE =
   "Hello, we missed {name} at our Sunday meeting. We hope everything is well. We would love to see {name} this Sunday!";
-
-// "Contacted" marks are kept in this browser only
-const CONTACT_KEY = "followup:contacted";
-const readContacted = (): Record<string, string> => {
-  try {
-    return JSON.parse(localStorage.getItem(CONTACT_KEY) || "{}");
-  } catch {
-    return {};
-  }
-};
 
 const AVATARS = [
   ["#ede9fe", "#7c3aed"],
@@ -230,19 +223,24 @@ export default function FollowUp() {
   const [search, setSearch] = useState("");
   const [template, setTemplate] = useState(DEFAULT_MESSAGE);
   const [reloadKey, setReloadKey] = useState(0);
-  const [contacted, setContacted] = useState<Record<string, string>>(readContacted);
+  const [contacted, setContacted] = useState<Record<string, string>>({});
   const [hideContacted, setHideContacted] = useState(false);
 
-  const markContacted = (id: string) =>
-    setContacted((prev) => {
-      const next = { ...prev, [id]: todayIso() };
-      try {
-        localStorage.setItem(CONTACT_KEY, JSON.stringify(next));
-      } catch {
-        /* storage unavailable – ignore */
-      }
-      return next;
+  // saved on the server; updated on screen first, rolled back if the save fails
+  const markContacted = (id: string) => {
+    const date = todayIso();
+    const before = contacted[id];
+    setContacted((prev) => ({ ...prev, [id]: date }));
+    saveContacted(id, date).catch((err) => {
+      setContacted((prev) => {
+        const next = { ...prev };
+        if (before) next[id] = before;
+        else delete next[id];
+        return next;
+      });
+      setError(err instanceof Error ? err.message : "Could not save contacted mark.");
     });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -250,19 +248,26 @@ export default function FollowUp() {
       setLoading(true);
       setError("");
       try {
-        const kidList = await loadKids();
+        const [kidList, contactedMap] = await Promise.all([
+          loadKids(),
+          loadContacted().catch(() => null),
+        ]);
         if (cancelled) return;
+        // today + yesterday + every Sunday in range
         const dates = recentSessionDates(weeks);
         const { data, failed } = await loadPresentMany(dates);
         if (cancelled) return;
         setKids(kidList);
         setPresentByDate(data);
+        if (contactedMap) setContacted(contactedMap);
         if (failed.length === dates.length) {
           setError("Could not load attendance from the server.");
         } else if (failed.length > 0) {
           setError(
             `${failed.length} date(s) could not be loaded, so streaks may be inaccurate. Press Refresh to retry.`,
           );
+        } else if (!contactedMap) {
+          setError("Could not load the contacted list. Press Refresh to retry.");
         }
       } catch (err) {
         if (cancelled) return;
@@ -276,12 +281,15 @@ export default function FollowUp() {
     };
   }, [weeks, reloadKey]);
 
-  // Only Sundays on which somebody actually came count as meetings
-  // (a cancelled Sunday must not count as "missed" for everyone)
+  // Only Sundays on which somebody actually came count as meetings.
+  // (a cancelled Sunday must not count as "missed" for everyone, and
+  //  today / yesterday are fetched but only count when they are Sundays)
   const sessions = useMemo(
     () =>
       Object.keys(presentByDate)
-        .filter((d) => Object.keys(presentByDate[d]).length > 0)
+        .filter(
+          (d) => isSunday(d) && Object.keys(presentByDate[d]).length > 0,
+        )
         .sort(),
     [presentByDate],
   );
@@ -561,19 +569,19 @@ export default function FollowUp() {
             </div>
 
             <div className="fu-tw" ref={tableRef}>
-            {loading ? (
-              <div className="fu-empty"><div className="fu-spin" />Loading attendance history...</div>
-            ) : shown.length === 0 ? (
-              <div className="fu-empty">
-                {tab === "followup"
-                  ? hideContacted && followUp.length > 0
-                    ? "Everyone on the list has been contacted this week."
-                    : "Nobody has missed that many Sundays in a row. Great!"
-                  : tab === "streak"
-                    ? "No one has a 3-Sunday streak yet."
-                    : "No new children on the latest Sunday."}
-              </div>
-            ) : (
+              {loading ? (
+                <div className="fu-empty"><div className="fu-spin" />Loading attendance history...</div>
+              ) : shown.length === 0 ? (
+                <div className="fu-empty">
+                  {tab === "followup"
+                    ? hideContacted && followUp.length > 0
+                      ? "Everyone on the list has been contacted this week."
+                      : "Nobody has missed that many Sundays in a row. Great!"
+                    : tab === "streak"
+                      ? "No one has a 3-Sunday streak yet."
+                      : "No new children on the latest Sunday."}
+                </div>
+              ) : (
                 <table className="fu-table">
                   <thead>
                     <tr>
@@ -589,100 +597,100 @@ export default function FollowUp() {
                   </thead>
                   <tbody>
                     {pageRows.map((r, i) => {
-                        const [bg, fg] = avatarFor(r.kid.name);
-                        return (
-                          <tr key={r.kid.id}>
-                            <td className="fu-sl-no fu-c-no">{startIdx + i + 1}</td>
-                            <td>
-                              <div className="fu-name">
-                                <span className="fu-av" style={{ background: bg, color: fg }}>
-                                  {initials(r.kid.name)}
-                                </span>
+                      const [bg, fg] = avatarFor(r.kid.name);
+                      return (
+                        <tr key={r.kid.id}>
+                          <td className="fu-sl-no fu-c-no">{startIdx + i + 1}</td>
+                          <td>
+                            <div className="fu-name">
+                              <span className="fu-av" style={{ background: bg, color: fg }}>
+                                {initials(r.kid.name)}
+                              </span>
+                              <div>
                                 <div>
-                                  <div>
-                                    <a
-                                      className="fu-nm"
-                                      href={`/child-add?id=${encodeURIComponent(r.kid.id)}`}
-                                      title="Open / edit this child"
-                                    >
-                                      {r.kid.name}
-                                    </a>
-                                  </div>
-                                  <div className="fu-meta">
-                                    {stdLabel(r.kid.std)} · {r.kid.place}
-                                    {contacted[r.kid.id] && (
-                                      <span className="fu-done">
-                                        {" "}· ✓ Contacted {formatDate(contacted[r.kid.id])}
-                                      </span>
-                                    )}
-                                  </div>
+                                  <a
+                                    className="fu-nm"
+                                    href={`/child-add?id=${encodeURIComponent(r.kid.id)}`}
+                                    title="Open / edit this child"
+                                  >
+                                    {r.kid.name}
+                                  </a>
+                                </div>
+                                <div className="fu-meta">
+                                  {stdLabel(r.kid.std)} · {r.kid.place}
+                                  {contacted[r.kid.id] && (
+                                    <span className="fu-done">
+                                      {" "}· ✓ Contacted {formatDate(contacted[r.kid.id])}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
-                            </td>
-                            <td className="fu-hide-md">
-                              <span className="fu-id" title={r.kid.id}>{r.kid.id.slice(0, 8)}</span>
-                            </td>
-                            <td className="fu-hide-sm">
+                            </div>
+                          </td>
+                          <td className="fu-hide-md">
+                            <span className="fu-id" title={r.kid.id}>{r.kid.id.slice(0, 8)}</span>
+                          </td>
+                          <td className="fu-hide-sm">
+                            {r.kid.mobile ? (
+                              <a className="fu-tel" href={`tel:${r.kid.mobile}`}>{r.kid.mobile}</a>
+                            ) : (
+                              <span className="fu-meta">—</span>
+                            )}
+                          </td>
+                          <td className="fu-hide-md">
+                            {r.lastSeen ? formatDate(r.lastSeen) : (
+                              <span className="fu-pill amber" style={pillStyle("amber")}>Not in range</span>
+                            )}
+                          </td>
+                          <td>
+                            {tab === "streak" ? (
+                              <span className="fu-pill green" style={pillStyle("green")}>{r.currentStreak} Sundays</span>
+                            ) : tab === "new" ? (
+                              <span className="fu-pill violet" style={pillStyle("violet")}>First visit</span>
+                            ) : (
+                              <span className="fu-pill red" style={pillStyle("red")}>{r.missedStreak} Sundays</span>
+                            )}
+                          </td>
+                          <td className="fu-hide-sm">
+                            <div>
+                              <b>{r.present}</b> / {r.eligible} <span className="fu-meta">({r.rate}%)</span>
+                            </div>
+                            <div className="fu-bartrack" style={{ background: "#fecaca" }}><span style={{ width: `${r.rate}%`, background: "#16a34a" }} /></div>
+                          </td>
+                          <td>
+                            <div className="fu-act">
                               {r.kid.mobile ? (
-                                <a className="fu-tel" href={`tel:${r.kid.mobile}`}>{r.kid.mobile}</a>
+                                <>
+                                  <a
+                                    className="fu-btn fu-wa"
+                                    style={WA_STYLE}
+                                    href={`https://wa.me/${waNumber(r.kid.mobile)}?text=${encodeURIComponent(messageFor(r.kid.name))}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={() => markContacted(r.kid.id)}
+                                  >
+                                    WhatsApp
+                                  </a>
+                                  <a
+                                    className="fu-btn fu-call"
+                                    style={CALL_STYLE}
+                                    href={`tel:${r.kid.mobile}`}
+                                    onClick={() => markContacted(r.kid.id)}
+                                  >
+                                    Call
+                                  </a>
+                                </>
                               ) : (
-                                <span className="fu-meta">—</span>
+                                <span className="fu-meta">No number</span>
                               )}
-                            </td>
-                            <td className="fu-hide-md">
-                              {r.lastSeen ? formatDate(r.lastSeen) : (
-                                <span className="fu-pill amber" style={pillStyle("amber")}>Not in range</span>
-                              )}
-                            </td>
-                            <td>
-                              {tab === "streak" ? (
-                                <span className="fu-pill green" style={pillStyle("green")}>{r.currentStreak} Sundays</span>
-                              ) : tab === "new" ? (
-                                <span className="fu-pill violet" style={pillStyle("violet")}>First visit</span>
-                              ) : (
-                                <span className="fu-pill red" style={pillStyle("red")}>{r.missedStreak} Sundays</span>
-                              )}
-                            </td>
-                            <td className="fu-hide-sm">
-                              <div>
-                                <b>{r.present}</b> / {r.eligible} <span className="fu-meta">({r.rate}%)</span>
-                              </div>
-                              <div className="fu-bartrack" style={{ background: "#fecaca" }}><span style={{ width: `${r.rate}%`, background: "#16a34a" }} /></div>
-                            </td>
-                            <td>
-                              <div className="fu-act">
-                                {r.kid.mobile ? (
-                                  <>
-                                    <a
-                                      className="fu-btn fu-wa"
-                                      style={WA_STYLE}
-                                      href={`https://wa.me/${waNumber(r.kid.mobile)}?text=${encodeURIComponent(messageFor(r.kid.name))}`}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      onClick={() => markContacted(r.kid.id)}
-                                    >
-                                      WhatsApp
-                                    </a>
-                                    <a
-                                      className="fu-btn fu-call"
-                                      style={CALL_STYLE}
-                                      href={`tel:${r.kid.mobile}`}
-                                      onClick={() => markContacted(r.kid.id)}
-                                    >
-                                      Call
-                                    </a>
-                                  </>
-                                ) : (
-                                  <span className="fu-meta">No number</span>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
-            )}
+              )}
             </div>
 
             {!loading && shown.length > 0 && (

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import Header from "../components/Header";
 
@@ -9,23 +9,25 @@ const ATTENDANCE_URL = `${API_BASE_URL}/attendance`; // POST -> one child
 const PRESENT_URL = `${ATTENDANCE_URL}/present`; // GET ?date=yyyy-mm-dd -> present list
 const BULK_URL = `${ATTENDANCE_URL}/bulk`; // POST -> array of records
 
-// Attendance record exactly as the API takes it
-// { kidsId, kidName, date: "2026-10-14", inTime: "09:15:00", status: "PRESENT" }
 interface ApiAttendance {
   id?: string;
   kidsId: string;
   kidName?: string;
   date: string;
   inTime: string | null;
+  outTime: string | null;
   status: string; // "PRESENT" | "ABSENT"
+  createdBy?: string;
+  updatedBy?: string;
 }
 
-// Item of GET /attendance/present?date=  (inTime / status may or may not be sent)
+// Item of GET /attendance/present?date=
 interface ApiPresentItem {
   kidsId: string;
   name?: string;
   std?: string;
   inTime?: string | null;
+  outTime?: string | null;
   status?: string;
 }
 
@@ -34,10 +36,14 @@ interface ApiKid {
   name: string;
   gender: string;
   std?: string | null;
-  selfNo?: string | null;
-  momNo?: string | null;
-  dadNo?: string | null;
-  guardianNo?: string | null;
+  mobileNo?: string | null;
+  fathermobileNo?: string | null;
+  mothermobileNo?: string | null;
+  guardianmobileNo?: string | null;
+  selfNo?: string | null; // legacy
+  motherNo?: string | null; // legacy
+  fatherNo?: string | null; // legacy
+  guardianNo?: string | null; // legacy
   address2?: string | null;
   address1?: string | null;
   state?: string | null;
@@ -49,7 +55,7 @@ interface ApiKid {
 
 // ─── Types ──────────────────────────────────────────────────────────────
 interface Student {
-  id: string; // kidsId
+  id: string; // kidsId  (e.g. JT-26-102)
   name: string;
   gender: string;
   mobile: string;
@@ -59,10 +65,38 @@ interface Student {
   age: number | null;
 }
 
-type TabKey = "attendees" | "nonAttendees";
+// today's times for a child that has checked in ("" = not yet)
+interface Mark {
+  inTime: string;
+  outTime: string;
+}
+
+type TabKey = "jst" | "checkedIn" | "checkedOut" | "absent";
 type GenderFilter = "all" | "Male" | "Female";
 type AgeFilter = "all" | "u6" | "6-10" | "11-14" | "15+";
 type Notice = { type: "error" | "success"; text: string } | null;
+type BulkAction = "in" | "out" | "absent";
+type ViewMode = "today" | "date" | "range" | "kid";
+type HistTab = "all" | "present" | "out" | "absent";
+
+// one row of the date-wise / history view
+interface HistRow {
+  key: string;
+  date: string;
+  kidsId: string;
+  name: string;
+  inTime: string;
+  outTime: string;
+  status: string; // "PRESENT" | "ABSENT"
+}
+
+const VIEW_MODES: { key: ViewMode; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "date", label: "By Date" },
+  { key: "range", label: "Range" },
+  { key: "kid", label: "By Kid" },
+];
+const MAX_RANGE_DAYS = 31;
 
 const GENDER_OPTIONS: { key: GenderFilter; label: string }[] = [
   { key: "all", label: "All" },
@@ -85,6 +119,9 @@ const AGE_OPTIONS: {
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20];
 
+// Everyone still checked in at/after this time is checked out automatically
+const AUTO_OUT_TIME = "18:00:00"; // 6:00 PM
+
 // ─── Helpers ────────────────────────────────────────────────────────────
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -95,6 +132,15 @@ const todayStr = () => {
 const nowTime = () => {
   const d = new Date();
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+// Logged-in user (saved in localStorage as "username" by the login page)
+const getUsername = (): string => {
+  try {
+    return localStorage.getItem("username") || "system";
+  } catch {
+    return "system";
+  }
 };
 
 // "09:15:00" -> "09:15 AM"   (empty -> "—")
@@ -160,7 +206,16 @@ const toStudent = (k: ApiKid): Student => ({
   id: k.kidsId,
   name: k.name,
   gender: k.gender,
-  mobile: k.selfNo || k.dadNo || k.momNo || k.guardianNo || "—",
+  mobile:
+    k.mobileNo ||
+    k.selfNo ||
+    k.fathermobileNo ||
+    k.fatherNo ||
+    k.mothermobileNo ||
+    k.motherNo ||
+    k.guardianmobileNo ||
+    k.guardianNo ||
+    "—",
   standard: formatStd(k.std),
   stdRaw: (k.std ?? "").toString().trim(),
   place: k.address2 || k.address1 || k.state || "—",
@@ -191,30 +246,43 @@ const postJson = async (url: string, body: unknown) => {
 const buildRecord = (
   st: Student,
   status: "PRESENT" | "ABSENT",
-  inTime: string = nowTime(),
+  inTime: string | null,
+  outTime: string | null = null,
 ): ApiAttendance => ({
   kidsId: st.id,
   kidName: st.name,
   date: todayStr(),
-  inTime: status === "PRESENT" ? inTime : null,
+  inTime: status === "PRESENT" ? inTime || null : null,
+  outTime: status === "PRESENT" ? outTime || null : null,
   status,
+  createdBy: getUsername(),
+  updatedBy: getUsername(),
 });
 
-// ─── Local cache of today's check-ins ───────────────────────────────────
+// ─── Local cache of today's check-ins / check-outs ──────────────────────
 // Used when GET /attendance/present is not available, and to remember the
-// check-in time if the server does not send it back.
+// times if the server does not send them back.
 const cacheKey = () => `attendance:${todayStr()}`;
 
-const readCache = (): Record<string, string> => {
+const readCache = (): Record<string, Mark> => {
   try {
     const raw = localStorage.getItem(cacheKey());
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, Mark | string>;
+    const out: Record<string, Mark> = {};
+    Object.keys(parsed).forEach((id) => {
+      const v = parsed[id];
+      // older versions stored just the check-in time as a string
+      out[id] =
+        typeof v === "string" ? { inTime: v, outTime: "" } : (v as Mark);
+    });
+    return out;
   } catch {
     return {};
   }
 };
 
-const writeCache = (map: Record<string, string>) => {
+const writeCache = (map: Record<string, Mark>) => {
   try {
     localStorage.setItem(cacheKey(), JSON.stringify(map));
   } catch {
@@ -223,6 +291,14 @@ const writeCache = (map: Record<string, string>) => {
 };
 
 const digits = (t: string) => t.replace(/\D/g, "");
+
+// "2026-10-18" + 1 -> "2026-10-19"
+const addDays = (iso: string, n: number) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + n);
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+};
+const time8 = (v?: string | null) => String(v ?? "").slice(0, 8);
 
 const pageCss = `
 html, body, #root { overflow: hidden !important; height: 100%; }
@@ -241,6 +317,13 @@ html, body, #root { overflow: hidden !important; height: 100%; }
 .att-clear { position: absolute; right: 6px; top: 50%; margin-top: -14px; width: 28px; height: 28px; border-radius: 50%;
   border: none; background: #f3f4f6; color: #6b7280; font-size: 12px; cursor: pointer; padding: 0; }
 
+/* date filter bar */
+.att-datebar input[type="date"], .att-datebar input[type="text"] { font-family: inherit; }
+
+/* kids ID chip */
+.att-idchip { display: inline-block; background: #f5f3ff; color: #6d28d9; border-radius: 6px; padding: 2px 8px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+
 /* mobile card list (hidden on desktop) */
 .att-cards { display: none; flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .att-selall { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 8px 12px;
@@ -249,9 +332,11 @@ html, body, #root { overflow: hidden !important; height: 100%; }
 .att-card input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; }
 .att-info { flex: 1; min-width: 0; }
 .att-name { font-weight: 600; font-size: 14px; color: #111827; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-name .att-idchip { margin-left: 6px; padding: 1px 6px; font-size: 11px; vertical-align: 1px; }
 .att-meta { font-size: 12px; color: #6b7280; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .att-tel { color: #2563eb; text-decoration: none; font-weight: 600; }
-.att-time { margin-top: 4px; }
+.att-time { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
+.att-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .att-card button { flex-shrink: 0; min-height: 40px; }
 .att-pageof { display: none; font-size: 13px; font-weight: 600; color: #374151; min-width: 52px; text-align: center; }
 
@@ -262,8 +347,8 @@ html, body, #root { overflow: hidden !important; height: 100%; }
   .att-title { font-size: 18px !important; }
   .att-notice { flex-wrap: wrap; }
 
-  .att-sum { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 8px !important; margin-bottom: 8px !important; }
-  .att-sumcard { padding: 6px 10px !important; border-radius: 12px !important; }
+  .att-sum { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 6px !important; margin-bottom: 8px !important; }
+  .att-sumcard { padding: 6px 8px !important; border-radius: 12px !important; }
 
   .att-tabs { padding: 0 6px !important; }
   .att-tabs button { flex: 1; justify-content: center; padding: 12px 8px !important; }
@@ -277,9 +362,12 @@ html, body, #root { overflow: hidden !important; height: 100%; }
   .att-perpage select { font-size: 16px !important; }
 
   .att-bulk { padding: 8px 10px !important; }
+  .att-datebar { padding: 8px 10px 0 !important; gap: 8px !important; }
+  .att-datebar input { font-size: 16px !important; flex: 1 1 120px; min-width: 0; }
 
   .att-tablewrap { display: none !important; }
   .att-cards { display: block; }
+  .att-actions { flex-direction: column; }
 
   .att-footer { padding: 8px 10px !important; }
   .att-num { display: none !important; }
@@ -336,6 +424,23 @@ const CheckIcon = () => (
   </svg>
 );
 
+const LogoutIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+
 const EditIcon = () => (
   <svg
     width="14"
@@ -355,8 +460,8 @@ const EditIcon = () => (
 // ─── Main Component ─────────────────────────────────────────────────────
 export default function Attendance() {
   const [students, setStudents] = useState<Student[]>([]);
-  // kidsId -> check-in time ("HH:mm:ss", may be "" if unknown). Key present = checked in today.
-  const [checkedIn, setCheckedIn] = useState<Record<string, string>>({});
+  // kidsId -> today's times. Key present = checked in today; outTime "" = not checked out yet.
+  const [marks, setMarks] = useState<Record<string, Mark>>({});
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -366,12 +471,26 @@ export default function Attendance() {
   const [genderFilter, setGenderFilter] = useState<GenderFilter>("all");
   const [ageFilter, setAgeFilter] = useState<AgeFilter>("all");
   const [stdFilter, setStdFilter] = useState<string>("all");
-  const [activeTab, setActiveTab] = useState<TabKey>("nonAttendees");
+  const [activeTab, setActiveTab] = useState<TabKey>("absent");
   const [search, setSearch] = useState("");
   const [perPage, setPerPage] = useState(10);
   const [page, setPage] = useState(1);
 
-  const isIn = (id: string) => id in checkedIn;
+  // date-wise / history view (Today = the live check-in screen)
+  const [viewMode, setViewMode] = useState<ViewMode>("today");
+  const [viewDate, setViewDate] = useState(todayStr());
+  const [rangeFrom, setRangeFrom] = useState(todayStr());
+  const [rangeTo, setRangeTo] = useState(todayStr());
+  const [kidQuery, setKidQuery] = useState("");
+  const [histRows, setHistRows] = useState<HistRow[]>([]);
+  const [histLoading, setHistLoading] = useState(false);
+  const [histFetched, setHistFetched] = useState(false);
+  const [histNotice, setHistNotice] = useState<Notice>(null);
+  const [histTab, setHistTab] = useState<HistTab>("all");
+
+  const isIn = (id: string) => id in marks;
+  const isOut = (id: string) => !!marks[id]?.outTime;
+  const isToday = viewMode === "today";
 
   // ─── Load children + today's present list ───────────────────────────
   // `signal` cancels the first run of React StrictMode's double effect (dev),
@@ -400,18 +519,21 @@ export default function Attendance() {
       const list = toArray<ApiPresentItem>(
         await presentRes.value.json().catch(() => []),
       );
-      const map: Record<string, string> = {};
+      const map: Record<string, Mark> = {};
       list.forEach((r) => {
         if (!r.kidsId) return;
         if (r.status && r.status.toUpperCase() !== "PRESENT") return;
-        map[r.kidsId] = r.inTime || cache[r.kidsId] || "";
+        map[r.kidsId] = {
+          inTime: r.inTime || cache[r.kidsId]?.inTime || "",
+          outTime: r.outTime || cache[r.kidsId]?.outTime || "",
+        };
       });
-      setCheckedIn(map);
+      setMarks(map);
     } else {
       console.warn(
         "GET /attendance/present unavailable  using locally saved check-ins.",
       );
-      setCheckedIn(cache);
+      setMarks(cache);
     }
 
     setLoading(false);
@@ -421,60 +543,279 @@ export default function Attendance() {
     const controller = new AbortController();
     void Promise.resolve().then(() => loadData(controller.signal));
     return () => controller.abort();
-   
   }, []);
 
   // Keep the local cache in sync (only after the first load finished)
   useEffect(() => {
-    if (!loading) writeCache(checkedIn);
-  }, [checkedIn, loading]);
+    if (!loading) writeCache(marks);
+  }, [marks, loading]);
 
-  // ─── Single check-in / not attended ─────────────────────────────────
+  // ─── Auto check-out at 6 PM ─────────────────────────────────────────
+  // Once the clock passes 6 PM, everyone who is checked in but not yet checked
+  // out gets out_time = 18:00:00 (or their check-in time if they came later).
+  // Runs once per page session; Undo Check Out afterwards is not overridden.
+  const autoState = useRef({ running: false, done: false });
+
+  const autoCheckOut = async () => {
+    const auto = autoState.current;
+    if (auto.running || auto.done || loading) return;
+    if (nowTime() < AUTO_OUT_TIME) return;
+
+    const pending = students.filter((st) => isIn(st.id) && !isOut(st.id));
+    if (pending.length === 0) {
+      auto.done = true;
+      return;
+    }
+
+    const outFor = (id: string) => {
+      const inTime = marks[id].inTime;
+      return inTime && inTime > AUTO_OUT_TIME ? inTime : AUTO_OUT_TIME;
+    };
+
+    auto.running = true;
+    try {
+      await postJson(
+        BULK_URL,
+        pending.map((st) =>
+          buildRecord(st, "PRESENT", marks[st.id].inTime, outFor(st.id)),
+        ),
+      );
+      setMarks((prev) => {
+        const next = { ...prev };
+        pending.forEach((st) => {
+          if (next[st.id] && !next[st.id].outTime) {
+            next[st.id] = {
+              inTime: next[st.id].inTime,
+              outTime: outFor(st.id),
+            };
+          }
+        });
+        return next;
+      });
+      auto.done = true;
+      setNotice({
+        type: "success",
+        text: `${pending.length} children were checked out automatically at 6:00 PM.`,
+      });
+    } catch (err) {
+      // auto.done stays false -> tries again on the next tick
+      setNotice({
+        type: "error",
+        text: `Auto check-out failed. ${err instanceof Error ? err.message : ""}`,
+      });
+    } finally {
+      auto.running = false;
+    }
+  };
+
+  // always call the latest version (fresh students / marks)
+  const autoRef = useRef(autoCheckOut);
+  useEffect(() => {
+    autoRef.current = autoCheckOut;
+  });
+
+  // check right after loading, then every 30 seconds
+  useEffect(() => {
+    if (loading) return;
+    void autoRef.current();
+    const timer = setInterval(() => void autoRef.current(), 30_000);
+    return () => clearInterval(timer);
+  }, [loading]);
+
+  // ─── Single actions ─────────────────────────────────────────────────
   const setRowBusy = (id: string, value: boolean) =>
     setBusy((prev) => ({ ...prev, [id]: value }));
 
-  const handleCheckIn = async (st: Student) => {
-    if (isIn(st.id) || busy[st.id]) return;
+  const runOne = async (
+    st: Student,
+    record: ApiAttendance,
+    apply: (prev: Record<string, Mark>) => Record<string, Mark>,
+    errText: string,
+  ) => {
     setRowBusy(st.id, true);
     setNotice(null);
     try {
-      const record = buildRecord(st, "PRESENT");
       await postJson(ATTENDANCE_URL, record);
-      setCheckedIn((prev) => ({ ...prev, [st.id]: record.inTime as string }));
+      setMarks(apply);
     } catch (err) {
       setNotice({
         type: "error",
-        text: `Could not check in ${st.name}. ${err instanceof Error ? err.message : ""}`,
+        text: `${errText} ${err instanceof Error ? err.message : ""}`,
       });
     } finally {
       setRowBusy(st.id, false);
     }
+  };
+
+  const handleCheckIn = async (st: Student) => {
+    if (isIn(st.id) || busy[st.id]) return;
+    const record = buildRecord(st, "PRESENT", nowTime());
+    await runOne(
+      st,
+      record,
+      (prev) => ({
+        ...prev,
+        [st.id]: { inTime: record.inTime as string, outTime: "" },
+      }),
+      `Could not check in ${st.name}.`,
+    );
+  };
+
+  const handleCheckOut = async (st: Student) => {
+    if (!isIn(st.id) || isOut(st.id) || busy[st.id]) return;
+    const outTime = nowTime();
+    const inTime = marks[st.id].inTime;
+    await runOne(
+      st,
+      buildRecord(st, "PRESENT", inTime, outTime),
+      (prev) => ({ ...prev, [st.id]: { inTime, outTime } }),
+      `Could not check out ${st.name}.`,
+    );
+  };
+
+  const handleUndoCheckOut = async (st: Student) => {
+    if (!isOut(st.id) || busy[st.id]) return;
+    const inTime = marks[st.id].inTime;
+    await runOne(
+      st,
+      buildRecord(st, "PRESENT", inTime, null),
+      (prev) => ({ ...prev, [st.id]: { inTime, outTime: "" } }),
+      `Could not undo check-out for ${st.name}.`,
+    );
   };
 
   const handleMarkNotAttended = async (st: Student) => {
     if (busy[st.id]) return;
     if (!window.confirm(`Mark ${st.name} as not attended?`)) return;
-    setRowBusy(st.id, true);
-    setNotice(null);
-    try {
-      await postJson(ATTENDANCE_URL, buildRecord(st, "ABSENT"));
-      setCheckedIn((prev) => {
+    await runOne(
+      st,
+      buildRecord(st, "ABSENT", null),
+      (prev) => {
         const next = { ...prev };
         delete next[st.id];
         return next;
-      });
+      },
+      `Could not update ${st.name}.`,
+    );
+  };
+
+  // ─── Date-wise / history view ───────────────────────────────────────
+  const changeMode = (m: ViewMode) => {
+    setViewMode(m);
+    setHistRows([]);
+    setHistFetched(false);
+    setHistNotice(null);
+    setHistTab("all");
+    setPage(1);
+    setSearch("");
+    setSelected({});
+  };
+
+  const fetchHistory = async () => {
+    const nameOf = (id: string, fallback?: string) =>
+      fallback || students.find((st) => st.id === id)?.name || "";
+
+    const presentRows = (list: ApiPresentItem[], date: string): HistRow[] =>
+      list
+        .filter(
+          (r) =>
+            r.kidsId && (!r.status || r.status.toUpperCase() === "PRESENT"),
+        )
+        .map((r) => ({
+          key: `${date}-${r.kidsId}`,
+          date,
+          kidsId: r.kidsId,
+          name: nameOf(r.kidsId, r.name),
+          inTime: time8(r.inTime),
+          outTime: time8(r.outTime),
+          status: "PRESENT",
+        }));
+
+    const getPresent = async (date: string) => {
+      const res = await fetch(`${PRESENT_URL}?date=${date}`);
+      if (!res.ok) throw new Error(await errorMessage(res));
+      return toArray<ApiPresentItem>(await res.json().catch(() => []));
+    };
+
+    setHistLoading(true);
+    setHistNotice(null);
+    setHistRows([]);
+    setPage(1);
+    try {
+      let rows: HistRow[] = [];
+
+      if (viewMode === "date") {
+        if (!viewDate) throw new Error("Pick a date.");
+        const present = presentRows(await getPresent(viewDate), viewDate);
+        const ids = new Set(present.map((r) => r.kidsId));
+        const absent: HistRow[] = students
+          .filter((st) => !ids.has(st.id))
+          .map((st) => ({
+            key: `${viewDate}-${st.id}`,
+            date: viewDate,
+            kidsId: st.id,
+            name: st.name,
+            inTime: "",
+            outTime: "",
+            status: "ABSENT",
+          }));
+        rows = [...present, ...absent];
+      } else if (viewMode === "range") {
+        if (!rangeFrom || !rangeTo) throw new Error("Pick from and to dates.");
+        if (rangeFrom > rangeTo)
+          throw new Error("From date must be before the to date.");
+        const dates: string[] = [];
+        for (let d = rangeFrom; d <= rangeTo; d = addDays(d, 1)) dates.push(d);
+        if (dates.length > MAX_RANGE_DAYS)
+          throw new Error(
+            `Please pick up to ${MAX_RANGE_DAYS} days at a time.`,
+          );
+        const results = await Promise.all(
+          dates.map(async (d) => ({ d, list: await getPresent(d) })),
+        );
+        results.forEach(({ d, list }) => rows.push(...presentRows(list, d)));
+      } else if (viewMode === "kid") {
+        const id = kidQuery.trim();
+        if (!id) throw new Error("Enter a kid ID, e.g. JT-26-102.");
+        const res = await fetch(
+          `${ATTENDANCE_URL}/kid/${encodeURIComponent(id)}`,
+        );
+        if (!res.ok) throw new Error(await errorMessage(res));
+        const list = toArray<ApiAttendance>(await res.json().catch(() => []));
+        rows = list.map((r, i) => {
+          const date = String(r.date ?? "").slice(0, 10);
+          return {
+            key: String(r.id ?? `${date}-${i}`),
+            date,
+            kidsId: r.kidsId || id,
+            name: nameOf(r.kidsId || id, r.kidName),
+            inTime: time8(r.inTime),
+            outTime: time8(r.outTime),
+            status: (r.status || "PRESENT").toUpperCase(),
+          };
+        });
+      }
+
+      rows.sort(
+        (a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name),
+      );
+      setHistRows(rows);
+      if (rows.length === 0)
+        setHistNotice({ type: "error", text: "No records found." });
     } catch (err) {
-      setNotice({
+      setHistNotice({
         type: "error",
-        text: `Could not update ${st.name}. ${err instanceof Error ? err.message : ""}`,
+        text: err instanceof Error ? err.message : "Could not load attendance.",
       });
     } finally {
-      setRowBusy(st.id, false);
+      setHistLoading(false);
+      setHistFetched(true);
     }
   };
 
   // ─── Derived lists ──────────────────────────────────────────────────
-  const ageRange = AGE_OPTIONS.find((a) => a.key === ageFilter) ?? AGE_OPTIONS[0];
+  const ageRange =
+    AGE_OPTIONS.find((a) => a.key === ageFilter) ?? AGE_OPTIONS[0];
 
   // unique standards present in the data (numbers first, then text)
   const stdOptions = Array.from(
@@ -495,13 +836,15 @@ export default function Attendance() {
       (ageFilter === "all" ||
         (st.age !== null && st.age >= ageRange.min && st.age <= ageRange.max)),
   );
-  const expectedList = visibleStudents;
-  const attendeesList = visibleStudents.filter((st) => isIn(st.id));
-  const nonAttendeesList = visibleStudents.filter((st) => !isIn(st.id));
+  const checkedInList = visibleStudents.filter((st) => isIn(st.id));
+  const checkedOutList = visibleStudents.filter((st) => isOut(st.id));
+  const absentList = visibleStudents.filter((st) => !isIn(st.id));
 
   const tabData: Record<TabKey, Student[]> = {
-    attendees: attendeesList,
-    nonAttendees: nonAttendeesList,
+    jst: visibleStudents,
+    checkedIn: checkedInList,
+    checkedOut: checkedOutList,
+    absent: absentList,
   };
 
   const q = search.trim().toLowerCase();
@@ -509,6 +852,7 @@ export default function Attendance() {
   const filtered = tabData[activeTab].filter(
     (st) =>
       !q ||
+      (st.id ?? "").toLowerCase().includes(q) ||
       st.name.toLowerCase().includes(q) ||
       st.mobile.includes(q) ||
       (qDigits !== "" && digits(st.mobile).includes(qDigits)) ||
@@ -516,12 +860,35 @@ export default function Attendance() {
       st.standard.toLowerCase().includes(q),
   );
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
+  // history rows, respecting the gender / age / standard filters
+  const visibleIds = new Set(visibleStudents.map((st) => st.id));
+  const knownIds = new Set(students.map((st) => st.id));
+  const histScoped = histRows.filter(
+    (r) => !knownIds.has(r.kidsId) || visibleIds.has(r.kidsId),
+  );
+  const histByTab: Record<HistTab, HistRow[]> = {
+    all: histScoped,
+    present: histScoped.filter((r) => r.status !== "ABSENT"),
+    out: histScoped.filter((r) => !!r.outTime),
+    absent: histScoped.filter((r) => r.status === "ABSENT"),
+  };
+  const histFiltered = histByTab[histTab].filter(
+    (r) =>
+      !q ||
+      r.kidsId.toLowerCase().includes(q) ||
+      r.name.toLowerCase().includes(q) ||
+      r.date.includes(q),
+  );
+
+  const listLen = isToday ? filtered.length : histFiltered.length;
+  const totalPages = Math.max(1, Math.ceil(listLen / perPage));
   const currentPage = Math.min(page, totalPages);
   const startIdx = (currentPage - 1) * perPage;
   const pageRows = filtered.slice(startIdx, startIdx + perPage);
+  const histPageRows = histFiltered.slice(startIdx, startIdx + perPage);
 
   // ─── Bulk selection / update ────────────────────────────────────────
+  const showSelect = isToday && activeTab !== "checkedOut";
   const selectedList = filtered.filter((st) => selected[st.id]);
   const allSelected =
     filtered.length > 0 && selectedList.length === filtered.length;
@@ -539,10 +906,31 @@ export default function Attendance() {
     }
   };
 
-  const runBulk = async (list: Student[], status: "PRESENT" | "ABSENT") => {
-    if (list.length === 0 || bulkBusy) return;
+  const runBulk = async (selectedKids: Student[], action: BulkAction) => {
+    if (bulkBusy) return;
+
+    // only the children the action applies to
+    const list =
+      action === "in"
+        ? selectedKids.filter((st) => !isIn(st.id))
+        : action === "out"
+          ? selectedKids.filter((st) => isIn(st.id) && !isOut(st.id))
+          : selectedKids;
+
+    if (list.length === 0) {
+      setNotice({
+        type: "error",
+        text:
+          action === "in"
+            ? "Everyone selected has already checked in."
+            : action === "out"
+              ? "Nobody selected is waiting to check out."
+              : "Nothing to update.",
+      });
+      return;
+    }
     if (
-      status === "ABSENT" &&
+      action === "absent" &&
       !window.confirm(`Mark ${list.length} children as not attended?`)
     )
       return;
@@ -550,15 +938,21 @@ export default function Attendance() {
     setBulkBusy(true);
     setNotice(null);
     try {
-      const inTime = nowTime(); // same check-in time for the whole batch
-      await postJson(
-        BULK_URL,
-        list.map((st) => buildRecord(st, status, inTime)),
+      const stamp = nowTime(); // same time for the whole batch
+      const records = list.map((st) =>
+        action === "in"
+          ? buildRecord(st, "PRESENT", stamp)
+          : action === "out"
+            ? buildRecord(st, "PRESENT", marks[st.id].inTime, stamp)
+            : buildRecord(st, "ABSENT", null),
       );
-      setCheckedIn((prev) => {
+      await postJson(BULK_URL, records);
+      setMarks((prev) => {
         const next = { ...prev };
         list.forEach((st) => {
-          if (status === "PRESENT") next[st.id] = inTime;
+          if (action === "in") next[st.id] = { inTime: stamp, outTime: "" };
+          else if (action === "out")
+            next[st.id] = { inTime: prev[st.id].inTime, outTime: stamp };
           else delete next[st.id];
         });
         return next;
@@ -567,9 +961,11 @@ export default function Attendance() {
       setNotice({
         type: "success",
         text:
-          status === "PRESENT"
+          action === "in"
             ? `${list.length} children checked in.`
-            : `${list.length} children marked as not attended.`,
+            : action === "out"
+              ? `${list.length} children checked out.`
+              : `${list.length} children marked as not attended.`,
       });
     } catch (err) {
       setNotice({
@@ -588,22 +984,69 @@ export default function Attendance() {
     setSelected({});
   };
 
-  const showTimeCol = activeTab === "attendees";
+  const showInCol = activeTab !== "absent";
+  const showOutCol = activeTab !== "absent";
 
   const tabs: { key: TabKey; label: string; count: number }[] = [
-    { key: "attendees", label: "Attendees", count: attendeesList.length },
-    {
-      key: "nonAttendees",
-      label: "Non Attendees",
-      count: nonAttendeesList.length,
-    },
+    { key: "jst", label: "JST Kids", count: visibleStudents.length },
+    { key: "absent", label: "Absent", count: absentList.length },
+    { key: "checkedIn", label: "Checked In", count: checkedInList.length },
+    { key: "checkedOut", label: "Checked Out", count: checkedOutList.length },
   ];
 
   const emptyText: Record<TabKey, string> = {
-    attendees: "No one has checked in yet.",
-    nonAttendees:
-      students.length === 0 ? "No children found." : "Everyone has checked in.",
+    jst: "No children found.",
+    checkedIn: "No one has checked in yet.",
+    checkedOut: "No one has checked out yet.",
+    absent: students.length === 0 ? "No children found." : "No one is absent.",
   };
+
+  const histTabs: { key: HistTab; label: string; count: number }[] = [
+    { key: "all", label: "All Records", count: histScoped.length },
+    { key: "present", label: "Present", count: histByTab.present.length },
+    { key: "out", label: "Checked Out", count: histByTab.out.length },
+    { key: "absent", label: "Absent", count: histByTab.absent.length },
+  ];
+
+  const tabList = isToday
+    ? tabs.map((t) => ({
+        key: t.key as string,
+        label: t.label,
+        count: t.count,
+        active: activeTab === t.key,
+        onClick: () => switchTab(t.key),
+      }))
+    : histTabs.map((t) => ({
+        key: t.key as string,
+        label: t.label,
+        count: t.count,
+        active: histTab === t.key,
+        onClick: () => {
+          setHistTab(t.key);
+          setPage(1);
+          setSearch("");
+        },
+      }));
+
+  const summaryCards = isToday
+    ? [
+        { label: "Expected", value: visibleStudents.length, color: "#111827" },
+        { label: "C In", value: checkedInList.length, color: "#16a34a" },
+        { label: "C Out", value: checkedOutList.length, color: "#ea580c" },
+        { label: "Absent", value: absentList.length, color: "#dc2626" },
+      ]
+    : [
+        { label: "Records", value: histScoped.length, color: "#111827" },
+        { label: "Present", value: histByTab.present.length, color: "#16a34a" },
+        { label: "C Out", value: histByTab.out.length, color: "#ea580c" },
+        { label: "Absent", value: histByTab.absent.length, color: "#dc2626" },
+      ];
+
+  const histEmpty = histFetched
+    ? "No records found."
+    : viewMode === "kid"
+      ? "Enter a kid ID and press Fetch."
+      : "Choose the date(s) and press Fetch.";
 
   // ─── Styles ───────────────────────────────────────────────────────────
   const s: { [key: string]: CSSProperties } = {
@@ -675,7 +1118,7 @@ export default function Attendance() {
     },
     summaryRow: {
       display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+      gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
       gap: "12px",
       marginBottom: "10px",
       flexShrink: 0,
@@ -798,8 +1241,41 @@ export default function Attendance() {
       backgroundColor: "white",
       outline: "none",
     },
+    dateBar: {
+      display: "flex",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: "10px",
+      padding: "10px 20px 0",
+      flexShrink: 0,
+    },
+    dateInput: {
+      padding: "7px 10px",
+      border: "1.5px solid #e5e7eb",
+      borderRadius: "8px",
+      fontSize: "13px",
+      color: "#374151",
+      backgroundColor: "white",
+      outline: "none",
+    },
+    presentBadge: {
+      backgroundColor: "#dcfce7",
+      color: "#16a34a",
+      borderRadius: "20px",
+      padding: "3px 10px",
+      fontSize: "11px",
+      fontWeight: 600,
+    },
+    absentBadge: {
+      backgroundColor: "#fee2e2",
+      color: "#dc2626",
+      borderRadius: "20px",
+      padding: "3px 10px",
+      fontSize: "11px",
+      fontWeight: 600,
+    },
     tableResponsive: { overflow: "auto", flex: 1, minHeight: 0 },
-    table: { width: "100%", borderCollapse: "collapse", minWidth: "700px" },
+    table: { width: "100%", borderCollapse: "collapse", minWidth: "840px" },
     th: {
       padding: "11px 16px",
       textAlign: "left",
@@ -834,12 +1310,13 @@ export default function Attendance() {
       fontSize: "12px",
       fontWeight: 600,
       cursor: "pointer",
+      whiteSpace: "nowrap",
     },
-    bulkPrimaryBtn: {
+    checkOutBtn: {
       display: "inline-flex",
       alignItems: "center",
       gap: "6px",
-      background: "#7c3aed",
+      background: "#ea580c",
       color: "white",
       border: "none",
       borderRadius: "8px",
@@ -847,6 +1324,7 @@ export default function Attendance() {
       fontSize: "12px",
       fontWeight: 600,
       cursor: "pointer",
+      whiteSpace: "nowrap",
     },
     editBtn: {
       display: "inline-flex",
@@ -860,6 +1338,7 @@ export default function Attendance() {
       fontSize: "12px",
       fontWeight: 600,
       cursor: "pointer",
+      whiteSpace: "nowrap",
     },
     timeBadge: {
       backgroundColor: "#ede9fe",
@@ -868,6 +1347,16 @@ export default function Attendance() {
       padding: "3px 10px",
       fontSize: "12px",
       fontWeight: 600,
+      whiteSpace: "nowrap",
+    },
+    outBadge: {
+      backgroundColor: "#ffedd5",
+      color: "#ea580c",
+      borderRadius: "20px",
+      padding: "3px 10px",
+      fontSize: "12px",
+      fontWeight: 600,
+      whiteSpace: "nowrap",
     },
     noData: {
       padding: "40px 20px",
@@ -944,31 +1433,73 @@ export default function Attendance() {
     opacity: disabled ? 0.5 : 1,
   });
 
-  // check-in / not-attended button (shared by the table and the mobile cards)
-  const actionButton = (st: Student) => {
-    const checked = isIn(st.id);
+  // row actions (shared by the table and the mobile cards)
+  //   not in            -> Check In
+  //   in, not out       -> Check Out  +  Not Attended
+  //   in and out        -> Undo Check Out
+  const actionButtons = (st: Student) => {
     const rowBusy = !!busy[st.id] || bulkBusy;
-    return checked ? (
-      <button
-        type="button"
-        style={s.editBtn}
-        disabled={rowBusy}
-        onClick={() => handleMarkNotAttended(st)}
-      >
-        <EditIcon />
-        {busy[st.id] ? "Updating..." : "Not Attended"}
-      </button>
-    ) : (
-      <button
-        type="button"
-        style={s.checkInBtn}
-        disabled={rowBusy}
-        onClick={() => handleCheckIn(st)}
-      >
-        <CheckIcon /> {busy[st.id] ? "Saving..." : "Check In"}
-      </button>
+
+    if (!isIn(st.id)) {
+      return (
+        <div className="att-actions">
+          <button
+            type="button"
+            style={s.checkInBtn}
+            disabled={rowBusy}
+            onClick={() => handleCheckIn(st)}
+          >
+            <CheckIcon /> {busy[st.id] ? "Saving..." : "Check In"}
+          </button>
+        </div>
+      );
+    }
+
+    if (!isOut(st.id)) {
+      return (
+        <div className="att-actions">
+          <button
+            type="button"
+            style={s.checkOutBtn}
+            disabled={rowBusy}
+            onClick={() => handleCheckOut(st)}
+          >
+            <LogoutIcon /> {busy[st.id] ? "Saving..." : "Check Out"}
+          </button>
+          <button
+            type="button"
+            style={s.editBtn}
+            disabled={rowBusy}
+            onClick={() => handleMarkNotAttended(st)}
+          >
+            <EditIcon /> Not Attended
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="att-actions">
+        <button
+          type="button"
+          style={s.editBtn}
+          disabled={rowBusy}
+          onClick={() => handleUndoCheckOut(st)}
+        >
+          <EditIcon /> {busy[st.id] ? "Updating..." : "Undo Check Out"}
+        </button>
+      </div>
     );
   };
+
+  const inBadge = (st: Student) =>
+    isIn(st.id) ? (
+      <span style={s.timeBadge}>In {formatTime(marks[st.id].inTime)}</span>
+    ) : null;
+  const outBadge = (st: Student) =>
+    isOut(st.id) ? (
+      <span style={s.outBadge}>Out {formatTime(marks[st.id].outTime)}</span>
+    ) : null;
 
   return (
     <div className="attendance-page" style={s.page}>
@@ -984,7 +1515,7 @@ export default function Attendance() {
           </div>
           <div>
             <h1 className="att-title" style={s.headerTitle}>
-              Check-in / Attendance
+              Attendance
             </h1>
             <p style={s.headerSub}>{formatDate(todayStr())}</p>
           </div>
@@ -1022,38 +1553,116 @@ export default function Attendance() {
           </div>
         )}
 
+        {!isToday && histNotice && (
+          <div
+            className="att-notice"
+            style={{
+              ...s.notice,
+              backgroundColor:
+                histNotice.type === "error" ? "#fef2f2" : "#f0fdf4",
+              color: histNotice.type === "error" ? "#dc2626" : "#16a34a",
+              border: `1px solid ${histNotice.type === "error" ? "#fecaca" : "#bbf7d0"}`,
+            }}
+          >
+            <span>{histNotice.text}</span>
+            <button
+              type="button"
+              style={s.noticeBtn}
+              onClick={() => setHistNotice(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <div className="att-sum" style={s.summaryRow}>
-          <div className="att-sumcard" style={s.summaryCard}>
-            <p style={s.summaryLabel}>Expected</p>
-            <p style={s.summaryValue}>{expectedList.length}</p>
-          </div>
-          <div className="att-sumcard" style={s.summaryCard}>
-            <p style={s.summaryLabel}>Checked In</p>
-            <p style={{ ...s.summaryValue, color: "#16a34a" }}>
-              {attendeesList.length}
-            </p>
-          </div>
-          <div className="att-sumcard" style={s.summaryCard}>
-            <p style={s.summaryLabel}>Yet to Arrive</p>
-            <p style={{ ...s.summaryValue, color: "#f97316" }}>
-              {nonAttendeesList.length}
-            </p>
-          </div>
+          {summaryCards.map((c) => (
+            <div className="att-sumcard" style={s.summaryCard} key={c.label}>
+              <p style={s.summaryLabel}>{c.label}</p>
+              <p style={{ ...s.summaryValue, color: c.color }}>{c.value}</p>
+            </div>
+          ))}
         </div>
 
         <div style={s.card}>
           <div className="att-tabs" style={s.tabBar}>
-            {tabs.map((t) => (
+            {tabList.map((t) => (
               <button
                 key={t.key}
                 type="button"
-                style={tabStyle(activeTab === t.key)}
-                onClick={() => switchTab(t.key)}
+                style={tabStyle(t.active)}
+                onClick={t.onClick}
               >
                 {t.label}
-                <span style={countStyle(activeTab === t.key)}>{t.count}</span>
+                <span style={countStyle(t.active)}>{t.count}</span>
               </button>
             ))}
+          </div>
+
+          {/* Date filter: Today / By Date / Range / By Kid */}
+          <div className="att-datebar" style={s.dateBar}>
+            <div className="att-seg" style={s.segment}>
+              {VIEW_MODES.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  style={segBtnStyle(viewMode === m.key)}
+                  onClick={() => changeMode(m.key)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            {viewMode === "date" && (
+              <input
+                type="date"
+                style={s.dateInput}
+                max={todayStr()}
+                value={viewDate}
+                onChange={(e) => setViewDate(e.target.value)}
+              />
+            )}
+            {viewMode === "range" && (
+              <>
+                <input
+                  type="date"
+                  style={s.dateInput}
+                  max={todayStr()}
+                  value={rangeFrom}
+                  onChange={(e) => setRangeFrom(e.target.value)}
+                />
+                <span style={{ color: "#6b7280", fontSize: "12px" }}>to</span>
+                <input
+                  type="date"
+                  style={s.dateInput}
+                  max={todayStr()}
+                  value={rangeTo}
+                  onChange={(e) => setRangeTo(e.target.value)}
+                />
+              </>
+            )}
+            {viewMode === "kid" && (
+              <input
+                type="text"
+                style={{ ...s.dateInput, minWidth: "200px" }}
+                placeholder="Kid ID e.g. JT-26-102"
+                value={kidQuery}
+                onChange={(e) => setKidQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void fetchHistory();
+                }}
+              />
+            )}
+            {!isToday && (
+              <button
+                type="button"
+                style={s.checkInBtn}
+                disabled={histLoading}
+                onClick={() => void fetchHistory()}
+              >
+                {histLoading ? "Loading..." : "Fetch"}
+              </button>
+            )}
           </div>
 
           <div className="att-toolbar" style={s.toolbar}>
@@ -1064,7 +1673,7 @@ export default function Attendance() {
               <input
                 style={s.searchInput}
                 type="text"
-                placeholder="Search by name, mobile, standard, place..."
+                placeholder="Search by ID, name, mobile, place..."
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
@@ -1155,27 +1764,37 @@ export default function Attendance() {
             </div>
           </div>
 
-          {selectedList.length > 0 && (
+          {showSelect && selectedList.length > 0 && (
             <div className="att-bulk" style={s.bulkBar}>
               <span>{selectedList.length} selected</span>
-              {activeTab === "nonAttendees" ? (
+              {(activeTab === "jst" || activeTab === "absent") && (
                 <button
                   type="button"
-                  style={s.bulkPrimaryBtn}
+                  style={s.checkInBtn}
                   disabled={bulkBusy}
-                  onClick={() => runBulk(selectedList, "PRESENT")}
+                  onClick={() => runBulk(selectedList, "in")}
                 >
-                  <CheckIcon />{" "}
-                  {bulkBusy ? "Checking in..." : "Check In Selected"}
+                  <CheckIcon /> {bulkBusy ? "Saving..." : "Check In Selected"}
                 </button>
-              ) : (
+              )}
+              {(activeTab === "jst" || activeTab === "checkedIn") && (
+                <button
+                  type="button"
+                  style={s.checkOutBtn}
+                  disabled={bulkBusy}
+                  onClick={() => runBulk(selectedList, "out")}
+                >
+                  <LogoutIcon /> {bulkBusy ? "Saving..." : "Check Out Selected"}
+                </button>
+              )}
+              {activeTab === "checkedIn" && (
                 <button
                   type="button"
                   style={s.editBtn}
                   disabled={bulkBusy}
-                  onClick={() => runBulk(selectedList, "ABSENT")}
+                  onClick={() => runBulk(selectedList, "absent")}
                 >
-                  <EditIcon /> {bulkBusy ? "Updating..." : "Mark Not Attended"}
+                  <EditIcon /> Mark Not Attended
                 </button>
               )}
               <button
@@ -1189,125 +1808,271 @@ export default function Attendance() {
             </div>
           )}
 
-          {/* Desktop / tablet: table */}
-          <div className="att-tablewrap" style={s.tableResponsive}>
-            {loading ? (
-              <div style={s.noData}>Loading children...</div>
-            ) : pageRows.length === 0 ? (
-              <div style={s.noData}>
-                {q ? "No matching students found." : emptyText[activeTab]}
+          {/* History view (By Date / Range / By Kid): read-only */}
+          {!isToday && (
+            <>
+              <div className="att-tablewrap" style={s.tableResponsive}>
+                {histLoading ? (
+                  <div style={s.noData}>Loading attendance...</div>
+                ) : histPageRows.length === 0 ? (
+                  <div style={s.noData}>
+                    {q ? "No matching records." : histEmpty}
+                  </div>
+                ) : (
+                  <table style={{ ...s.table, minWidth: "720px" }}>
+                    <thead>
+                      <tr>
+                        <th style={s.th}>Date</th>
+                        <th style={s.th}>ID</th>
+                        <th style={s.th}>Name</th>
+                        <th style={s.th}>Check-in Time</th>
+                        <th style={s.th}>Check-out Time</th>
+                        <th style={s.th}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {histPageRows.map((r) => (
+                        <tr key={r.key}>
+                          <td style={s.td}>{formatDate(r.date)}</td>
+                          <td style={s.td}>
+                            <span className="att-idchip">{r.kidsId}</span>
+                          </td>
+                          <td style={{ ...s.td, ...s.nameCell }}>
+                            {r.name || "—"}
+                          </td>
+                          <td style={s.td}>
+                            {r.inTime ? (
+                              <span style={s.timeBadge}>
+                                {formatTime(r.inTime)}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td style={s.td}>
+                            {r.outTime ? (
+                              <span style={s.outBadge}>
+                                {formatTime(r.outTime)}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td style={s.td}>
+                            <span
+                              style={
+                                r.status === "ABSENT"
+                                  ? s.absentBadge
+                                  : s.presentBadge
+                              }
+                            >
+                              {r.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
-            ) : (
-              <table style={s.table}>
-                <thead>
-                  <tr>
-                    <th style={{ ...s.th, width: "44px" }}>
-                      <input
-                        type="checkbox"
-                        checked={allSelected}
-                        onChange={toggleAll}
-                        title="Select all"
-                      />
-                    </th>
-                    <th style={s.th}>Action</th>
-                    <th style={s.th}>Name</th>
-                    <th style={s.th}>Mobile</th>
-                    <th style={s.th}>Age</th>
-                    <th style={s.th}>Standard</th>
-                    <th style={s.th}>Place</th>
-                    {showTimeCol && <th style={s.th}>Check-in Time</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pageRows.map((st) => (
-                    <tr key={st.id}>
-                      <td style={s.td}>
-                        <input
-                          type="checkbox"
-                          checked={!!selected[st.id]}
-                          onChange={() => toggleOne(st.id)}
-                        />
-                      </td>
-                      <td style={s.td}>{actionButton(st)}</td>
-                      <td style={{ ...s.td, ...s.nameCell }}>{st.name}</td>
-                      <td style={s.td}>{st.mobile}</td>
-                      <td style={s.td}>{st.age ?? "—"}</td>
-                      <td style={s.td}>{st.standard}</td>
-                      <td style={s.td}>{st.place}</td>
-                      {showTimeCol && (
-                        <td style={s.td}>
-                          <span style={s.timeBadge}>
-                            {formatTime(checkedIn[st.id])}
-                          </span>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
 
-          {/* Mobile: card list (name + details on the left, action on the right) */}
-          <div className="att-cards">
-            {loading ? (
-              <div style={s.noData}>Loading children...</div>
-            ) : pageRows.length === 0 ? (
-              <div style={s.noData}>
-                {q ? "No matching students found." : emptyText[activeTab]}
-              </div>
-            ) : (
-              <>
-                <label className="att-selall">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={toggleAll}
-                  />
-                  Select all ({filtered.length})
-                </label>
-                {pageRows.map((st) => (
-                  <div className="att-card" key={st.id}>
-                    <input
-                      type="checkbox"
-                      checked={!!selected[st.id]}
-                      onChange={() => toggleOne(st.id)}
-                      aria-label={`Select ${st.name}`}
-                    />
-                    <div className="att-info">
-                      <div className="att-name">{st.name}</div>
-                      <div className="att-meta">
-                        {st.mobile !== "—" ? (
-                          <a className="att-tel" href={`tel:${st.mobile}`}>
-                            {st.mobile}
-                          </a>
-                        ) : (
-                          "—"
-                        )}
-                        {st.age !== null ? ` · ${st.age} yrs` : ""}
-                        {` · ${st.standard} · ${st.place}`}
-                      </div>
-                      {showTimeCol && (
+              <div className="att-cards">
+                {histLoading ? (
+                  <div style={s.noData}>Loading attendance...</div>
+                ) : histPageRows.length === 0 ? (
+                  <div style={s.noData}>
+                    {q ? "No matching records." : histEmpty}
+                  </div>
+                ) : (
+                  histPageRows.map((r) => (
+                    <div className="att-card" key={r.key}>
+                      <div className="att-info">
+                        <div className="att-name">
+                          {r.name || "—"}
+                          <span className="att-idchip">{r.kidsId}</span>
+                        </div>
+                        <div className="att-meta">{formatDate(r.date)}</div>
                         <div className="att-time">
-                          <span style={s.timeBadge}>
-                            {formatTime(checkedIn[st.id])}
+                          {r.inTime && (
+                            <span style={s.timeBadge}>
+                              In {formatTime(r.inTime)}
+                            </span>
+                          )}
+                          {r.outTime && (
+                            <span style={s.outBadge}>
+                              Out {formatTime(r.outTime)}
+                            </span>
+                          )}
+                          <span
+                            style={
+                              r.status === "ABSENT"
+                                ? s.absentBadge
+                                : s.presentBadge
+                            }
+                          >
+                            {r.status}
                           </span>
                         </div>
-                      )}
+                      </div>
                     </div>
-                    {actionButton(st)}
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
+                  ))
+                )}
+              </div>
+            </>
+          )}
 
-          {!loading && filtered.length > 0 && (
+          {isToday && (
+            <>
+              {/* Desktop / tablet: table */}
+              <div className="att-tablewrap" style={s.tableResponsive}>
+                {loading ? (
+                  <div style={s.noData}>Loading children...</div>
+                ) : pageRows.length === 0 ? (
+                  <div style={s.noData}>
+                    {q ? "No matching students found." : emptyText[activeTab]}
+                  </div>
+                ) : (
+                  <table style={s.table}>
+                    <thead>
+                      <tr>
+                        {showSelect && (
+                          <th style={{ ...s.th, width: "44px" }}>
+                            <input
+                              type="checkbox"
+                              checked={allSelected}
+                              onChange={toggleAll}
+                              title="Select all"
+                            />
+                          </th>
+                        )}
+                        <th style={s.th}>Action</th>
+                        <th style={s.th}>ID</th>
+                        <th style={s.th}>Name</th>
+                        <th style={s.th}>Mobile</th>
+
+                        {/* <th style={s.th}>Standard</th> */}
+                        <th style={s.th}>Place</th>
+                        {showInCol && <th style={s.th}>Check-in Time</th>}
+                        {showOutCol && <th style={s.th}>Check-out Time</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pageRows.map((st) => (
+                        <tr key={st.id}>
+                          {showSelect && (
+                            <td style={s.td}>
+                              <input
+                                type="checkbox"
+                                checked={!!selected[st.id]}
+                                onChange={() => toggleOne(st.id)}
+                              />
+                            </td>
+                          )}
+                          <td style={s.td}>{actionButtons(st)}</td>
+                          <td style={s.td}>
+                            <span className="att-idchip">{st.id}</span>
+                          </td>
+                          <td style={{ ...s.td, ...s.nameCell }}>{st.name}</td>
+                          <td style={s.td}>{st.mobile}</td>
+                          {/* <td style={s.td}>{st.age ?? "—"}</td> */}
+                          {/* <td style={s.td}>{st.standard}</td> */}
+                          <td style={s.td}>{st.place}</td>
+                          {showInCol && (
+                            <td style={s.td}>
+                              {isIn(st.id) ? (
+                                <span style={s.timeBadge}>
+                                  {formatTime(marks[st.id].inTime)}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          )}
+                          {showOutCol && (
+                            <td style={s.td}>
+                              {isOut(st.id) ? (
+                                <span style={s.outBadge}>
+                                  {formatTime(marks[st.id].outTime)}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Mobile: card list (name + details on the left, actions on the right) */}
+              <div className="att-cards">
+                {loading ? (
+                  <div style={s.noData}>Loading children...</div>
+                ) : pageRows.length === 0 ? (
+                  <div style={s.noData}>
+                    {q ? "No matching students found." : emptyText[activeTab]}
+                  </div>
+                ) : (
+                  <>
+                    {showSelect && (
+                      <label className="att-selall">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          onChange={toggleAll}
+                        />
+                        Select all ({filtered.length})
+                      </label>
+                    )}
+                    {pageRows.map((st) => (
+                      <div className="att-card" key={st.id}>
+                        {showSelect && (
+                          <input
+                            type="checkbox"
+                            checked={!!selected[st.id]}
+                            onChange={() => toggleOne(st.id)}
+                            aria-label={`Select ${st.name}`}
+                          />
+                        )}
+                        <div className="att-info">
+                          <div className="att-name">
+                            {st.name}
+                            <span className="att-idchip">{st.id}</span>
+                          </div>
+                          <div className="att-meta">
+                            {st.mobile !== "—" ? (
+                              <a className="att-tel" href={`tel:${st.mobile}`}>
+                                {st.mobile}
+                              </a>
+                            ) : (
+                              "—"
+                            )}
+                            {st.age !== null ? ` · ${st.age} yrs` : ""}
+                            {` · ${st.standard} · ${st.place}`}
+                          </div>
+                          {activeTab !== "absent" && isIn(st.id) && (
+                            <div className="att-time">
+                              {inBadge(st)}
+                              {outBadge(st)}
+                            </div>
+                          )}
+                        </div>
+                        {actionButtons(st)}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {!(isToday ? loading : histLoading) && listLen > 0 && (
             <div className="att-footer" style={s.footer}>
               <span style={s.showingText}>
-                Showing {startIdx + 1}–
-                {Math.min(startIdx + perPage, filtered.length)} of{" "}
-                {filtered.length}
+                Showing {startIdx + 1}–{Math.min(startIdx + perPage, listLen)}{" "}
+                of {listLen}
               </span>
               <div className="att-pages" style={s.pagination}>
                 <button

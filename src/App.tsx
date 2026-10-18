@@ -9,6 +9,7 @@ const AddChild = lazy(() => import("./pages/AddChild"));
 const ChildReports = lazy(() => import("./pages/ChildReports"));
 const ChildAnalytics = lazy(() => import("./pages/ChildAnalytics"));
 const Followup = lazy(() => import("./pages/Followup"));
+const Staff = lazy(() => import("./pages/Staff"));
 
 function App() {
   return (
@@ -34,6 +35,7 @@ function App() {
         <Route path="/childReport" element={<ChildReports />} />
         <Route path="/childAnalytics" element={<ChildAnalytics />} />
         <Route path="/followup" element={<Followup />} />
+        <Route path="/staff" element={<Staff />} />
       </Routes>
     </Suspense>
   );

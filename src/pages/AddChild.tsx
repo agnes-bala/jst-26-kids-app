@@ -1,35 +1,19 @@
 import { useState, useEffect, useRef } from "react";
-import type { CSSProperties, ChangeEvent } from "react";
+import type { CSSProperties, ChangeEvent, KeyboardEvent } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { createPortal } from "react-dom";
 import Header from "../components/Header";
 
 const API_BASE_URL = "/api"; // proxied by Vite -> http://10.12.1.118:8081
 
 // ─── API contract ────────────────────────────────────────────────────────
-//  POST   /api/kids          add
-//  PUT    /api/kids/{id}     update
-//  GET    /api/kids          list      GET /api/kids/{id}  single
-//  POST   /api/attendance    mark one child present
+// kidsId looks like JT-26-102, JT-26-103, ... The backend requires it in the
+// POST body, so the frontend works out the next number (highest existing + 1).
+
 const KIDS_URL = `${API_BASE_URL}/kids`;
 const ATTENDANCE_URL = `${API_BASE_URL}/attendance`;
-
-const newUuid = (): string => {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  const b = crypto.getRandomValues(new Uint8Array(16));
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0"));
-  return `${h.slice(0, 4).join("")}-${h.slice(4, 6).join("")}-${h
-    .slice(6, 8)
-    .join("")}-${h.slice(8, 10).join("")}-${h.slice(10).join("")}`;
-};
 
 // The API's `photo` field is a string, so the image is sent as a base64 data URL
 const fileToDataUrl = (file: File) =>
@@ -98,17 +82,23 @@ interface ApiKid {
   languageKnown?: string | null;
   address1?: string | null;
   address2?: string | null;
+  city?: string | null;
   state?: string | null;
   country?: string | null;
   pincode?: string | null;
-  momName?: string | null;
-  dadName?: string | null;
-  momNo?: string | null;
-  dadNo?: string | null;
+  motherName?: string | null;
+  fatherName?: string | null;
+  motherNo?: string | null;
+  fatherNo?: string | null;
   guardianName?: string | null;
   guardianNo?: string | null;
-  occupation?: string | null;
-  selfNo?: string | null;
+  occupation?: string | null; // legacy
+  fatherOccupation?: string | null;
+  selfNo?: string | null; // legacy -> mobileNo
+  mobileNo?: string | null;
+  fathermobileNo?: string | null;
+  mothermobileNo?: string | null;
+  guardianmobileNo?: string | null;
   createdAt?: string | null;
   createdBy?: string | null;
 }
@@ -148,7 +138,12 @@ const normName = (t?: string | null) =>
   (t ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 const last10 = (t?: string | null) => (t ?? "").replace(/\D/g, "").slice(-10);
 
-const phonesOf = (k: ApiKid) => [k.selfNo, k.momNo, k.dadNo, k.guardianNo];
+const phonesOf = (k: ApiKid) => [
+  k.mobileNo ?? k.selfNo,
+  k.mothermobileNo ?? k.motherNo,
+  k.fathermobileNo ?? k.fatherNo,
+  k.guardianmobileNo ?? k.guardianNo,
+];
 
 // Every child that has this mobile (self / mom / dad / guardian)
 const findKidsByMobile = async (mobile: string): Promise<ApiKid[]> => {
@@ -177,13 +172,38 @@ const findExistingChild = async (
   );
 };
 
-// Same local cache the Attendance page uses (key "attendance:YYYY-MM-DD")
+// Next kidsId = highest existing JT-26-<n> + 1 (first one is JT-26-102)
+const KIDS_ID_PREFIX = "JT-26";
+const KIDS_ID_START = 102;
+
+const generateKidsId = async (): Promise<string> => {
+  const res = await fetch(KIDS_URL);
+  if (!res.ok) {
+    throw new Error(await readError(res, "Could not generate the child ID"));
+  }
+  const kids = toArray<ApiKid>(await res.json().catch(() => []));
+  const re = new RegExp(`^${KIDS_ID_PREFIX}-(\\d+)$`, "i");
+  let max = KIDS_ID_START - 1;
+  kids.forEach((k) => {
+    const m = re.exec((k.kidsId ?? "").trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  });
+  return `${KIDS_ID_PREFIX}-${max + 1}`;
+};
+
+// ─── Local cache of today's attendance ───────────────────────────────────
+
+interface Mark {
+  inTime: string;
+  outTime: string;
+}
+
 const attendanceCacheKey = () => `attendance:${todayStr()}`;
 
-const readAttendanceCache = (): Record<string, string> => {
+const readAttendanceCache = (): Record<string, Mark | string> => {
   try {
     const raw = localStorage.getItem(attendanceCacheKey());
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    return raw ? (JSON.parse(raw) as Record<string, Mark | string>) : {};
   } catch {
     return {};
   }
@@ -192,15 +212,17 @@ const readAttendanceCache = (): Record<string, string> => {
 const saveAttendanceCache = (kidsId: string, inTime: string) => {
   try {
     const map = readAttendanceCache();
-    map[kidsId] = inTime;
+    map[kidsId] = { inTime, outTime: "" }; // fresh check-in, not checked out yet
     localStorage.setItem(attendanceCacheKey(), JSON.stringify(map));
   } catch {
     /* storage unavailable – ignore */
   }
 };
 
+// Attendance record: { kidsId, kidName, date, inTime, outTime, status, createdBy, updatedBy }
 const markPresent = async (kidsId: string, kidName: string) => {
   const inTime = nowTime();
+  const username = getUsername();
   const res = await fetch(ATTENDANCE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -209,7 +231,10 @@ const markPresent = async (kidsId: string, kidName: string) => {
       kidName,
       date: todayStr(),
       inTime,
+      outTime: null,
       status: "PRESENT",
+      createdBy: username,
+      updatedBy: username,
     }),
   });
   if (!res.ok) throw new Error(await readError(res, "Attendance failed"));
@@ -237,21 +262,21 @@ const markPresentWithRetry = async (
   kidsId: string,
   kidName: string,
   mobile: string,
-) => {
+): Promise<string> => {
   try {
     await markPresent(kidsId, kidName);
-    return;
+    return kidsId;
   } catch {
     await sleep(800);
   }
   try {
     await markPresent(kidsId, kidName);
-    return;
+    return kidsId;
   } catch (lastErr) {
     const found = await findExistingChild(kidName, mobile).catch(() => null);
     if (found) {
       await markPresent(found.kidsId, found.name);
-      return;
+      return found.kidsId;
     }
     throw lastErr;
   }
@@ -261,6 +286,36 @@ const MAX_PHOTO_MB = 2;
 const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 const GENDERS = ["Male", "Female"];
+const LOCATIONS = [
+  "ALADIVILAI",
+  "ANBU NAGAR",
+  "ANGAMANGALAM",
+  "ARUMUGANERI",
+  "IDAIYANVILAI",
+  "KALLAMPARAI",
+  "KANNIVILAI",
+  "KURUKATTUR",
+  "KURUMBUR",
+  "LAKSHMIPURAM",
+  "MARANTHALAI",
+  "MUKKANI",
+  "MUKKUPERI",
+  "NALLANVILAI",
+  "NALLUR",
+  "NALUMAVADI",
+  "NAZARETH",
+  "PURAIYOOR",
+  "SHUNMUGAPURAM",
+  "SUNDARA RAJAPURAM",
+  "THANGAMMAL PURAM",
+  "THENTHIRUPPERAI",
+  "THIRUMALAR PURAM",
+  "TIRUNELVELI",
+  "TUTICORIN",
+  "UMARIKADU",
+  "VALLIOOR",
+  "YOHARATHINA NAGAR",
+];
 const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 const RELIGIONS = ["Christian", "Hindu", "Muslim"];
 const BASIC_FIELDS = ["name", "gender", "age", "std", "selfNo"];
@@ -331,16 +386,17 @@ const childSchema = z.object({
 
   address1: opt,
   address2: opt,
+  city: opt,
   state: opt,
   country: opt,
   pincode: opt.refine((v) => !v || /^[0-9]{6}$/.test(v), {
     message: "Pincode must be 6 digits.",
   }),
 
-  dadName: opt,
-  dadNo: optPhone,
-  momName: opt,
-  momNo: optPhone,
+  fatherName: opt,
+  fatherNo: optPhone,
+  motherName: opt,
+  motherNo: optPhone,
   guardianName: opt,
   guardianNo: optPhone,
   occupation: opt,
@@ -366,13 +422,14 @@ const emptyValues: ChildFormValues = {
   transport: "",
   address1: "",
   address2: "",
+  city: "",
   state: "",
   country: "India",
   pincode: "",
-  dadName: "",
-  dadNo: "",
-  momName: "",
-  momNo: "",
+  fatherName: "",
+  fatherNo: "",
+  motherName: "",
+  motherNo: "",
   guardianName: "",
   guardianNo: "",
   occupation: "",
@@ -388,7 +445,7 @@ const toFormValues = (k: ApiKid): ChildFormValues => ({
   gender: s0(k.gender),
   age: s0(k.age),
   std: s0(k.std),
-  selfNo: s0(k.selfNo),
+  selfNo: s0(k.mobileNo ?? k.selfNo),
   bloodGroup: s0(k.bloodGroup),
   religion: s0(k.religion),
   aadharNo: s0(k.aadharNo),
@@ -402,16 +459,17 @@ const toFormValues = (k: ApiKid): ChildFormValues => ({
         : "",
   address1: s0(k.address1),
   address2: s0(k.address2),
+  city: s0(k.city),
   state: s0(k.state),
   country: s0(k.country),
   pincode: s0(k.pincode),
-  dadName: s0(k.dadName),
-  dadNo: s0(k.dadNo),
-  momName: s0(k.momName),
-  momNo: s0(k.momNo),
+  fatherName: s0(k.fatherName),
+  fatherNo: s0(k.fathermobileNo ?? k.fatherNo),
+  motherName: s0(k.motherName),
+  motherNo: s0(k.mothermobileNo ?? k.motherNo),
   guardianName: s0(k.guardianName),
-  guardianNo: s0(k.guardianNo),
-  occupation: s0(k.occupation),
+  guardianNo: s0(k.guardianmobileNo ?? k.guardianNo),
+  occupation: s0(k.fatherOccupation ?? k.occupation),
   languageKnown: s0(k.languageKnown),
   interest: s0(k.interest),
   hobbies: s0(k.hobbies),
@@ -436,6 +494,31 @@ html, body, #root { overflow: hidden !important; height: 100%; }
 .child-page select:focus {
   border-color: #7c3aed !important;
   box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12) !important;
+}
+.place-link-btn {
+  margin-top: 6px;
+  background: none;
+  border: none;
+  color: #7c3aed;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.place-link-btn:hover { color: #5b21b6; }
+.place-option-active { background: #f5f3ff !important; }
+.kid-id-chip {
+  display: inline-block;
+  margin-left: 10px;
+  background: #ede9fe;
+  color: #6d28d9;
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
 }
 @media (max-width: 1000px) {
   .child-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -463,18 +546,202 @@ const ChildIcon = ({ size = 22 }: { size?: number }) => (
   </svg>
 );
 
+// ─── Place autocomplete ──────────────────────────────────────────────────
+// Free-text allowed at all times: the user may pick from the list or type
+// their own place. The "Not in list?" button switches to a plain input.
+function PlaceAutocomplete({
+  value,
+  options,
+  onChange,
+  hasError,
+  inputStyle,
+  errorMessage,
+}: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+  hasError?: boolean;
+  inputStyle: CSSProperties;
+  errorMessage?: string;
+}) {
+  const query = value;
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  // Position state for the portal
+  const [coords, setCoords] = useState({ top: 0, left: 0, width: 0 });
+
+  // Update dropdown position when opened or on scroll/resize
+  useEffect(() => {
+    if (!open) return;
+
+    const updatePosition = () => {
+      if (inputRef.current) {
+        const rect = inputRef.current.getBoundingClientRect();
+        // Add window.scrollY in case the body scrolls
+        setCoords({
+          top: rect.bottom + window.scrollY + 4,
+          left: rect.left + window.scrollX,
+          width: rect.width,
+        });
+      }
+    };
+
+    updatePosition();
+    window.addEventListener("scroll", updatePosition, true); // true catches scrolling inside containers
+    window.addEventListener("resize", updatePosition);
+
+    return () => {
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open]);
+
+  // Close on outside click
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (
+        boxRef.current &&
+        !boxRef.current.contains(e.target as Node) &&
+        listRef.current &&
+        !listRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? options.filter((o) => o.toLowerCase().includes(q))
+    : options;
+
+  const commit = (v: string) => {
+    onChange(v);
+    setOpen(false);
+    setHighlight(-1);
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === "Enter") {
+      if (open && highlight >= 0 && filtered[highlight]) {
+        e.preventDefault();
+        commit(filtered[highlight]);
+      }
+    } else if (e.key === "Escape") {
+      setOpen(false);
+      setHighlight(-1);
+    }
+  };
+
+  // The dropdown menu rendered via Portal
+  const dropdownMenu =
+    open && filtered.length > 0
+      ? createPortal(
+          <ul
+            ref={listRef}
+            role="listbox"
+            style={{
+              position: "absolute",
+              top: coords.top,
+              left: coords.left,
+              width: coords.width,
+              zIndex: 9999, // Ensure it floats above everything
+              margin: 0,
+              padding: "4px 0",
+              listStyle: "none",
+              background: "white",
+              border: "1px solid #e5e7eb",
+              borderRadius: "8px",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.10)",
+              maxHeight: "220px",
+              overflowY: "auto", // Scroll inside the dropdown itself
+            }}
+          >
+            {filtered.map((option, i) => (
+              <li
+                key={option}
+                role="option"
+                aria-selected={i === highlight}
+                onMouseDown={(e) => {
+                  e.preventDefault(); // Keep input focused
+                  commit(option);
+                }}
+                onMouseEnter={() => setHighlight(i)}
+                style={{
+                  padding: "8px 12px",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  color: "#374151",
+                  background: i === highlight ? "#f5f3ff" : "white",
+                }}
+              >
+                {option}
+              </li>
+            ))}
+          </ul>,
+          document.body, // Render directly to body
+        )
+      : null;
+
+  return (
+    <div ref={boxRef} style={{ position: "relative" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        placeholder="Type or select a place"
+        autoComplete="off"
+        onChange={(e) => {
+          onChange(e.target.value); // Free text allowed
+          setOpen(true);
+          setHighlight(-1);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+        style={{
+          ...inputStyle,
+          borderColor: hasError ? "#dc2626" : "#e5e7eb",
+        }}
+      />
+      {dropdownMenu}
+      {errorMessage && (
+        <p style={{ fontSize: "11px", color: "#dc2626", margin: "3px 0 0 0" }}>
+          {errorMessage}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Component ─────────────────────────────────────────────────────
 export default function ChildAdd() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
+  const [savedId, setSavedId] = useState(""); // kidsId of the child just saved (shown in the success banner)
   const [info, setInfo] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState("");
   const [existingPhoto, setExistingPhoto] = useState(""); // saved photo of the child being edited
   const [photoError, setPhotoError] = useState("");
   const [showMore, setShowMore] = useState(false);
+  const [customPlace, setCustomPlace] = useState(false); // true => free-text place input
   const [editId, setEditId] = useState<string | null>(null); // set => update mode
+  // full record as loaded, merged into the PUT so fields not on this form are kept
+  const [editKid, setEditKid] = useState<Record<string, unknown> | null>(null);
   const [editMeta, setEditMeta] = useState<{
     createdAt: string | null;
     createdBy: string | null;
@@ -495,6 +762,7 @@ export default function ChildAdd() {
     reset,
     getValues,
     setValue,
+    watch,
     formState: { errors },
   } = useForm<ChildFormValues>({
     resolver: zodResolver(childSchema),
@@ -503,6 +771,7 @@ export default function ChildAdd() {
 
   const isEdit = editId !== null;
   const shownPhoto = photoPreview || existingPhoto;
+  const placeValue = watch("address1") ?? "";
 
   useEffect(() => {
     return () => {
@@ -546,7 +815,9 @@ export default function ChildAdd() {
     reset(emptyValues);
     clearPhoto();
     setShowMore(false);
+    setCustomPlace(false);
     setEditId(null);
+    setEditKid(null);
     setEditMeta(null);
     setFamilyPrompt(null);
     answered.current.clear();
@@ -555,7 +826,11 @@ export default function ChildAdd() {
   // Feed an existing child into the form and switch to update mode
   const loadKid = (k: ApiKid) => {
     reset(toFormValues(k));
+    // If the saved place is not in the known list, open in free-text mode
+    const savedPlace = (k.address1 ?? "").trim();
+    setCustomPlace(!!savedPlace && !LOCATIONS.includes(savedPlace));
     setEditId(k.kidsId);
+    setEditKid(k as unknown as Record<string, unknown>);
     setFamilyPrompt(null);
     setEditMeta({
       createdAt: k.createdAt ?? null,
@@ -626,8 +901,9 @@ export default function ChildAdd() {
         loadKid(same);
         setSaveError("");
         setSaveSuccess("");
+        setSavedId("");
         setInfo(
-          `${same.name} is already in the list. Details loaded - edit and press Update Child.`,
+          `${same.name} (${same.kidsId}) is already in the list. Details loaded - edit and press Update Child.`,
         );
         return;
       }
@@ -645,12 +921,15 @@ export default function ChildAdd() {
   const copyAddress = () => {
     if (!familyPrompt) return;
     const k = familyPrompt.source;
-    (["address1", "address2", "state", "country", "pincode"] as const).forEach(
-      (f) =>
-        setValue(f, s0(k[f]) || (f === "country" ? "India" : ""), {
-          shouldDirty: true,
-        }),
+    (
+      ["address1", "address2", "city", "state", "country", "pincode"] as const
+    ).forEach((f) =>
+      setValue(f, s0(k[f]) || (f === "country" ? "India" : ""), {
+        shouldDirty: true,
+      }),
     );
+    const copiedPlace = (k.address1 ?? "").trim();
+    setCustomPlace(!!copiedPlace && !LOCATIONS.includes(copiedPlace));
     answered.current.add(familyPrompt.key);
     setFamilyPrompt(null);
     setShowMore(true);
@@ -661,22 +940,29 @@ export default function ChildAdd() {
     setFamilyPrompt(null);
   };
 
-  // Same payload for add (POST) and update (PUT)
-  const buildPayload = async (values: ChildFormValues, kidsId: string) => {
+  // Same payload for add (POST) and update (PUT).
+  //  add    -> kidsId = newly generated JT-26-xxx
+  //  update -> kidsId of the loaded child is kept
+  const buildPayload = async (
+    values: ChildFormValues,
+    kidsId: string | null,
+  ) => {
     const v = (key: keyof ChildFormValues) =>
       (values[key] ?? "").toString().trim();
     const n = (key: keyof ChildFormValues) => v(key) || null;
     const username = getUsername();
 
-    const payload: Record<string, string | number | boolean | null> = {
-      kidsId,
+    const payload: Record<string, unknown> = {
+      // edit: start from the saved record; add: sensible defaults
+      ...(editKid ?? { isActive: true }),
+      ...(kidsId ? { kidsId } : {}),
 
       // required
       name: v("name"),
       gender: v("gender"),
       age: Number(v("age")),
       std: v("std"),
-      selfNo: v("selfNo"),
+      mobileNo: v("selfNo"),
 
       // optional -> null when left empty
       bloodGroup: n("bloodGroup"),
@@ -690,16 +976,17 @@ export default function ChildAdd() {
       languageKnown: n("languageKnown"),
       address1: n("address1"),
       address2: n("address2"),
+      city: n("city"),
       state: n("state"),
       country: n("country"),
       pincode: n("pincode"),
-      momName: n("momName"),
-      dadName: n("dadName"),
-      momNo: n("momNo"),
-      dadNo: n("dadNo"),
+      motherName: n("motherName"),
+      fatherName: n("fatherName"),
+      mothermobileNo: n("motherNo"),
+      fathermobileNo: n("fatherNo"),
       guardianName: n("guardianName"),
-      guardianNo: n("guardianNo"),
-      occupation: n("occupation"),
+      guardianmobileNo: n("guardianNo"),
+      fatherOccupation: n("occupation"),
       // new file > saved photo > none
       photo: photo
         ? await compressImage(photo).catch(() => fileToDataUrl(photo))
@@ -710,6 +997,10 @@ export default function ChildAdd() {
       createdBy: editMeta?.createdBy ?? username,
       updatedBy: username,
     };
+    // old field names are no longer part of the API
+    ["selfNo", "fatherNo", "motherNo", "guardianNo", "occupation"].forEach(
+      (key) => delete payload[key],
+    );
     return payload;
   };
 
@@ -722,6 +1013,7 @@ export default function ChildAdd() {
     setSaving(true);
     setSaveError("");
     setSaveSuccess("");
+    setSavedId("");
     setInfo("");
     try {
       // A) UPDATE – child was loaded from the list
@@ -739,6 +1031,7 @@ export default function ChildAdd() {
         // plain update -> no attendance
         if (!withAttendance) {
           setSaveSuccess(`${name} was updated.`);
+          setSavedId(editId);
           resetAll();
           return;
         }
@@ -750,9 +1043,10 @@ export default function ChildAdd() {
             await markPresentWithRetry(editId, name, values.selfNo);
             setSaveSuccess(`${name} was updated and marked present.`);
           }
+          setSavedId(editId);
         } catch (err) {
           setSaveError(
-            `${name} was updated, but attendance could not be saved. ${
+            `${name} (${editId}) was updated, but attendance could not be saved. ${
               err instanceof Error ? err.message : ""
             } Press Update Child & Attendance again to retry.`,
           );
@@ -767,13 +1061,14 @@ export default function ChildAdd() {
       if (existing) {
         loadKid(existing);
         setInfo(
-          `${existing.name} is already in the list. Details loaded - edit and press Update Child.`,
+          `${existing.name} (${existing.kidsId}) is already in the list. Details loaded - edit and press Update Child.`,
         );
         return;
       }
 
-      // C) New child -> add, then mark attendance
-      const payload = await buildPayload(values, newUuid());
+      // C) New child -> generate the next JT-26-xxx id, add, then mark attendance
+      const newKidsId = await generateKidsId();
+      const payload = await buildPayload(values, newKidsId);
       const res = await fetch(KIDS_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -783,24 +1078,28 @@ export default function ChildAdd() {
 
       // Use the id the server actually stored (falls back to ours)
       const saved = await res.json().catch(() => null);
-      const savedId = String(saved?.kidsId ?? saved?.id ?? payload.kidsId);
+      let newId = String(saved?.kidsId ?? saved?.id ?? newKidsId);
 
       try {
-        await markPresentWithRetry(
-          savedId,
+        newId = await markPresentWithRetry(
+          newId,
           String(payload.name),
           values.selfNo,
         );
       } catch (err) {
+        setSaveSuccess(`${payload.name} was added.`);
+        setSavedId(newId);
         setSaveError(
-          `${payload.name} was added, but attendance could not be saved. ${
+          `${payload.name} (${newId}) was added, but attendance could not be saved. ${
             err instanceof Error ? err.message : ""
-          } Press Save Child again to retry attendance.`,
+          } Mark attendance from the Attendance page.`,
         );
+        resetAll();
         return;
       }
 
       setSaveSuccess(`${payload.name} was added and marked present.`);
+      setSavedId(newId);
       resetAll();
     } catch (err) {
       console.error(err);
@@ -830,6 +1129,7 @@ export default function ChildAdd() {
     resetAll();
     setSaveError("");
     setSaveSuccess("");
+    setSavedId("");
     setInfo("");
   };
 
@@ -1169,6 +1469,9 @@ export default function ChildAdd() {
           <div>
             <h1 style={s.headerTitle}>
               {isEdit ? "Update Child" : "Add Child"}
+              {isEdit && editId && (
+                <span className="kid-id-chip">{editId}</span>
+              )}
             </h1>
           </div>
         </div>
@@ -1207,7 +1510,17 @@ export default function ChildAdd() {
                 </div>
               </div>
             )}
-            {saveSuccess && <div style={s.successBanner}>{saveSuccess}</div>}
+            {saveSuccess && (
+              <div style={s.successBanner}>
+                {saveSuccess}
+                {savedId && (
+                  <>
+                    {" "}
+                    ID: <b>{savedId}</b>
+                  </>
+                )}
+              </div>
+            )}
             {saveError && <div style={s.errorBanner}>{saveError}</div>}
 
             <div className="child-grid" style={s.formBody}>
@@ -1216,6 +1529,54 @@ export default function ChildAdd() {
                 inputMode: "tel",
                 lookup: true,
               })}
+              {/* ── Place: autocomplete + free-text fallback ── */}
+              <div>
+                <label style={s.label}>Place</label>
+                {customPlace ? (
+                  <input
+                    style={s.input}
+                    type="text"
+                    placeholder="Type the place name"
+                    maxLength={80}
+                    {...register("address1")}
+                  />
+                ) : (
+                  <PlaceAutocomplete
+                    value={placeValue}
+                    options={LOCATIONS}
+                    onChange={(v) =>
+                      setValue("address1", v, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      })
+                    }
+                    hasError={!!errors.address1}
+                    inputStyle={s.input}
+                    errorMessage={errors.address1?.message}
+                  />
+                )}
+                {customPlace && errors.address1 && (
+                  <p style={s.fieldError}>{errors.address1.message}</p>
+                )}
+                <button
+                  type="button"
+                  className="place-link-btn"
+                  onClick={() => {
+                    if (!customPlace) {
+                      // entering free-text mode: clear so they can type fresh
+                      setValue("address1", "", {
+                        shouldDirty: true,
+                        shouldValidate: false,
+                      });
+                    }
+                    setCustomPlace((v) => !v);
+                  }}
+                >
+                  {customPlace
+                    ? "← Choose from list instead"
+                    : "My place is not in the list"}
+                </button>
+              </div>
               {textField("name", "Name", "Child's full name", { lookup: true })}
               {selectField("gender", "Gender", GENDERS, "Select gender")}
               {textField("age", "Age", "e.g. 10", {
@@ -1317,12 +1678,11 @@ export default function ChildAdd() {
                   <p className="span-full" style={s.sectionTitle}>
                     Address
                   </p>
-                  {textField("address1", "Address Line 1", "House no, street", {
-                    cls: "span-2",
-                  })}
+
                   {textField("address2", "Address Line 2", "Area, town", {
                     cls: "span-2",
                   })}
+                  {textField("city", "City", "e.g. Tuticorin")}
                   {textField("state", "State", "e.g. Tamil Nadu")}
                   {textField("country", "Country", "e.g. India")}
                   {textField("pincode", "Pincode", "e.g. 635001", {
@@ -1333,12 +1693,12 @@ export default function ChildAdd() {
                   <p className="span-full" style={s.sectionTitle}>
                     Family Details
                   </p>
-                  {textField("dadName", "Father's Name", "Dad's name")}
-                  {textField("dadNo", "Father's Mobile", "e.g. 9000000002", {
+                  {textField("fatherName", "Father's Name", "Dad's name")}
+                  {textField("fatherNo", "Father's Mobile", "e.g. 9000000002", {
                     inputMode: "tel",
                   })}
-                  {textField("momName", "Mother's Name", "Mom's name")}
-                  {textField("momNo", "Mother's Mobile", "e.g. 9000000001", {
+                  {textField("motherName", "Mother's Name", "Mom's name")}
+                  {textField("motherNo", "Mother's Mobile", "e.g. 9000000001", {
                     inputMode: "tel",
                   })}
                   {textField("guardianName", "Guardian Name", "If different")}
