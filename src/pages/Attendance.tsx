@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import Header from "../components/Header";
+import { CATEGORIES, CATEGORY_COLORS, normCategory } from "./AttendanceApi";
 
 // ─── API ────────────────────────────────────────────────────────────────
 const API_BASE_URL = "/api"; // proxied by Vite -> http://10.12.1.118:8081
-const KIDS_URL = `${API_BASE_URL}/kids`; // GET  -> all children
+const KIDS_URL = `${API_BASE_URL}/kids`; // GET  -> all children, PUT /kids/{id} -> update one
 const ATTENDANCE_URL = `${API_BASE_URL}/attendance`; // POST -> one child
 const PRESENT_URL = `${ATTENDANCE_URL}/present`; // GET ?date=yyyy-mm-dd -> present list
 const BULK_URL = `${ATTENDANCE_URL}/bulk`; // POST -> array of records
@@ -13,6 +14,7 @@ interface ApiAttendance {
   id?: string;
   kidsId: string;
   kidName?: string;
+  category?: string | null;
   date: string;
   inTime: string | null;
   outTime: string | null;
@@ -35,6 +37,7 @@ interface ApiKid {
   kidsId: string;
   name: string;
   gender: string;
+  category?: string | null; // "Outsider" | "Staff Kid" | "NLS Kid"
   std?: string | null;
   mobileNo?: string | null;
   fathermobileNo?: string | null;
@@ -58,6 +61,7 @@ interface Student {
   id: string; // kidsId  (e.g. JT-26-102)
   name: string;
   gender: string;
+  category: string; // "Outsider" | "Staff Kid" | "NLS Kid" | "" (not set)
   mobile: string;
   standard: string;
   stdRaw: string; // raw std value from the API, used for the filter
@@ -73,7 +77,7 @@ interface Mark {
 
 type TabKey = "jst" | "checkedIn" | "checkedOut" | "absent";
 type GenderFilter = "all" | "Male" | "Female";
-type AgeFilter = "all" | "u6" | "6-10" | "11-14" | "15+";
+type CategoryFilter = "all" | "Outsider" | "Staff Kid" | "NLS Kid" | "none";
 type Notice = { type: "error" | "success"; text: string } | null;
 type BulkAction = "in" | "out" | "absent";
 type ViewMode = "today" | "date" | "range" | "kid";
@@ -104,23 +108,18 @@ const GENDER_OPTIONS: { key: GenderFilter; label: string }[] = [
   { key: "Female", label: "Girls" },
 ];
 
-const AGE_OPTIONS: {
-  key: AgeFilter;
-  label: string;
-  min: number;
-  max: number;
-}[] = [
-  { key: "all", label: "All Ages", min: 0, max: 200 },
-  { key: "u6", label: "Under 6", min: 0, max: 5 },
-  { key: "6-10", label: "6–10", min: 6, max: 10 },
-  { key: "11-14", label: "11–14", min: 11, max: 14 },
-  { key: "15+", label: "15+", min: 15, max: 200 },
+const CATEGORY_OPTIONS: { key: CategoryFilter; label: string }[] = [
+  { key: "all", label: "All Types" },
+  { key: "Outsider", label: "Outsider" },
+  { key: "Staff Kid", label: "Staff Kid" },
+  { key: "NLS Kid", label: "NLS Kid" },
+  { key: "none", label: "Not set" },
 ];
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20];
 
 // Everyone still checked in at/after this time is checked out automatically
-const AUTO_OUT_TIME = "18:00:00"; // 6:00 PM
+const AUTO_OUT_TIME = "17:00:00"; // 5:00 PM
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -206,6 +205,7 @@ const toStudent = (k: ApiKid): Student => ({
   id: k.kidsId,
   name: k.name,
   gender: k.gender,
+  category: normCategory(k.category),
   mobile:
     k.mobileNo ||
     k.selfNo ||
@@ -243,6 +243,8 @@ const postJson = async (url: string, body: unknown) => {
   if (!res.ok) throw new Error(await errorMessage(res));
 };
 
+// Attendance record. `category` travels with it so the attendance row itself
+// carries the child's category (Outsider / Staff Kid / NLS Kid).
 const buildRecord = (
   st: Student,
   status: "PRESENT" | "ABSENT",
@@ -251,6 +253,7 @@ const buildRecord = (
 ): ApiAttendance => ({
   kidsId: st.id,
   kidName: st.name,
+  category: st.category || null,
   date: todayStr(),
   inTime: status === "PRESENT" ? inTime || null : null,
   outTime: status === "PRESENT" ? outTime || null : null,
@@ -259,9 +262,6 @@ const buildRecord = (
   updatedBy: getUsername(),
 });
 
-// ─── Local cache of today's check-ins / check-outs ──────────────────────
-// Used when GET /attendance/present is not available, and to remember the
-// times if the server does not send them back.
 const cacheKey = () => `attendance:${todayStr()}`;
 
 const readCache = (): Record<string, Mark> => {
@@ -311,7 +311,18 @@ html, body, #root { overflow: hidden !important; height: 100%; }
   box-shadow: none !important;
 }
 .attendance-page button:disabled { cursor: not-allowed !important; opacity: 0.6; }
-.attendance-page input[type="checkbox"] { width: 16px; height: 16px; accent-color: #7c3aed; cursor: pointer; }
+
+/* custom checkbox (the default one rendered as a black square) */
+.attendance-page input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none; box-sizing: border-box;
+  width: 20px; height: 20px; margin: 0; flex-shrink: 0; position: relative;
+  border: 2px solid #c4b5fd; border-radius: 6px; background: #fff; cursor: pointer;
+}
+.attendance-page input[type="checkbox"]:checked { background: #7c3aed; border-color: #7c3aed; }
+.attendance-page input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 5px; top: 1px; width: 4px; height: 9px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
 
 /* search clear button */
 .att-clear { position: absolute; right: 6px; top: 50%; margin-top: -14px; width: 28px; height: 28px; border-radius: 50%;
@@ -324,24 +335,40 @@ html, body, #root { overflow: hidden !important; height: 100%; }
 .att-idchip { display: inline-block; background: #f5f3ff; color: #6d28d9; border-radius: 6px; padding: 2px 8px;
   font-size: 12px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
 
+/* category select (inline in the row) + category summary chips */
+.att-catsel { height: 30px; padding: 0 8px; border-radius: 8px; border: 1.5px solid #e5e7eb; font-size: 12px; font-weight: 600;
+  font-family: inherit; background: #fff; color: #374151; cursor: pointer; max-width: 130px; }
+.att-catsel:disabled { cursor: not-allowed; opacity: .6; }
+.att-catrow { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0; }
+.att-catchip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1.5px solid transparent; cursor: pointer; }
+.att-catchip.on { border-color: #7c3aed; }
+.att-catchip small { font-weight: 500; opacity: .8; }
+
 /* mobile card list (hidden on desktop) */
 .att-cards { display: none; flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-.att-selall { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-  background: #fafafa; border-bottom: 1px solid #f3f4f6; font-size: 12px; font-weight: 600; color: #6b7280; cursor: pointer; }
-.att-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f3f4f6; }
-.att-card input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; }
-.att-info { flex: 1; min-width: 0; }
-.att-name { font-weight: 600; font-size: 14px; color: #111827; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-selall { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: #fafafa; border-bottom: 1px solid #f3f4f6; font-size: 13px; font-weight: 600; color: #6b7280; cursor: pointer; }
+.att-card { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px 10px; padding: 12px; border-bottom: 1px solid #f3f4f6; background: #fff; }
+.att-card.att-in { box-shadow: inset 3px 0 0 #16a34a; }
+.att-card.att-out { box-shadow: inset 3px 0 0 #ea580c; }
+.att-card > input[type="checkbox"] { margin-top: 2px; }
+.att-info { flex: 1 1 0; min-width: 0; }
+.att-name { font-weight: 700; font-size: 15px; line-height: 1.3; color: #111827; word-break: break-word; }
 .att-name .att-idchip { margin-left: 6px; padding: 1px 6px; font-size: 11px; vertical-align: 1px; }
-.att-meta { font-size: 12px; color: #6b7280; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-meta { font-size: 12.5px; line-height: 1.4; color: #6b7280; margin-top: 3px; word-break: break-word; }
 .att-tel { color: #2563eb; text-decoration: none; font-weight: 600; }
-.att-time { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
-.att-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.att-card button { flex-shrink: 0; min-height: 40px; }
+.att-time { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.att-cardcat { margin-top: 8px; }
+.att-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .att-pageof { display: none; font-size: 13px; font-weight: 600; color: #374151; min-width: 52px; text-align: center; }
 
 @media (max-width: 700px) {
-  .att-wrap { padding: 8px 10px 10px !important; }
+  /* the whole page scrolls on mobile (no tiny inner scroll area) */
+  html, body, #root { height: auto !important; overflow: visible !important; }
+  .attendance-page { height: auto !important; min-height: 100dvh; overflow-x: clip !important; overflow-y: visible !important; }
+  .att-wrap { flex: none !important; min-height: auto !important; padding: 8px 10px 14px !important; }
+  .att-main { flex: none !important; min-height: auto !important; overflow: visible !important; border-radius: 14px !important; }
+
   .att-hsec { margin-bottom: 8px !important; gap: 10px !important; }
   .att-hicon { width: 38px !important; height: 38px !important; }
   .att-title { font-size: 18px !important; }
@@ -350,28 +377,55 @@ html, body, #root { overflow: hidden !important; height: 100%; }
   .att-sum { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 6px !important; margin-bottom: 8px !important; }
   .att-sumcard { padding: 6px 8px !important; border-radius: 12px !important; }
 
-  .att-tabs { padding: 0 6px !important; }
-  .att-tabs button { flex: 1; justify-content: center; padding: 12px 8px !important; }
+  /* the 4 category chips share one row, label on top, count below */
+  .att-catrow { flex-wrap: nowrap; gap: 6px; margin-bottom: 8px; overflow: visible; }
+  .att-catchip { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; align-items: center;
+    gap: 0; padding: 5px 2px; border-radius: 12px; line-height: 1.25; font-size: 11px; text-align: center; }
+  .att-catchip small { font-size: 11px; }
 
-  .att-toolbar { padding: 8px 10px !important; gap: 8px !important; }
-  .att-search { flex: 1 1 100% !important; max-width: none !important; }
+  /* sticky tabs, all 4 visible */
+  .att-tabs { position: sticky; top: 0; z-index: 6; background: #fff; padding: 0 !important; border-radius: 14px 14px 0 0; overflow-x: hidden !important; }
+  .att-tabs button { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; align-items: center;
+    gap: 3px !important; padding: 8px 2px !important; font-size: 12px !important; line-height: 1.2;
+    white-space: normal !important; text-align: center; }
+  .att-tabs button span { font-size: 11px !important; padding: 1px 8px !important; }
+
+  /* toolbar: search + gender full width, then category | standard | rows */
+  .att-toolbar { display: grid !important; grid-template-columns: 1fr 1fr 72px; gap: 8px !important; padding: 8px 10px !important; }
+  .att-search { grid-column: 1 / -1; max-width: none !important; }
   .att-search input { font-size: 16px !important; padding: 11px 36px 11px 34px !important; }
-  .att-seg { flex: 1 1 100%; display: flex !important; overflow-x: auto; }
-  .att-seg button { flex: 1; padding: 8px 10px !important; white-space: nowrap; }
+  .att-toolbar > .att-seg { grid-column: 1 / -1; }
+  .att-seg { display: flex !important; overflow-x: auto; }
+  .att-seg button { flex: 1; text-align: center; padding: 8px 10px !important; white-space: nowrap; }
+  .att-perpage { min-width: 0; }
+  .att-perpage select { width: 100%; font-size: 15px !important; padding: 8px 6px !important; }
   .att-pp-label { display: none; }
-  .att-perpage select { font-size: 16px !important; }
 
-  .att-bulk { padding: 8px 10px !important; }
   .att-datebar { padding: 8px 10px 0 !important; gap: 8px !important; }
   .att-datebar input { font-size: 16px !important; flex: 1 1 120px; min-width: 0; }
+  .att-datebar > button { flex: 1 1 100%; justify-content: center; min-height: 42px; }
+
+  /* bulk bar stays on screen while scrolling the list */
+  .att-bulk { position: sticky; top: 0; z-index: 7; padding: 8px 10px !important; gap: 6px !important; }
+  .att-bulk button { padding: 7px 10px !important; font-size: 12px !important; }
+  .att-bulk .att-catsel { flex: 1 1 130px; max-width: none; height: 34px; font-size: 13px; }
 
   .att-tablewrap { display: none !important; }
-  .att-cards { display: block; }
-  .att-actions { flex-direction: column; }
+  .att-cards { display: block; flex: none; overflow: visible; }
 
-  .att-footer { padding: 8px 10px !important; }
+  /* card: info on top, full-width action buttons underneath */
+  .att-actions { flex: 1 1 100%; box-sizing: border-box; flex-wrap: nowrap; }
+  .att-card--sel .att-actions { padding-left: 30px; }
+  .att-actions button { flex: 1 1 0; justify-content: center; min-height: 42px; font-size: 13px !important; }
+  .att-cardcat button { min-height: 30px; flex: none; }
+  .att-card .att-catsel { min-height: 34px; font-size: 14px; max-width: 100%; }
+
+  /* footer pinned to the bottom of the screen */
+  .att-footer { position: sticky; bottom: 0; z-index: 6; background: #fff; padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+    border-radius: 0 0 14px 14px; box-shadow: 0 -2px 8px rgba(0,0,0,0.05); }
   .att-num { display: none !important; }
   .att-pageof { display: inline-block; }
+  .att-pages button { min-width: 40px !important; height: 38px !important; }
 }
 `;
 
@@ -467,9 +521,12 @@ export default function Attendance() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [bulkBusy, setBulkBusy] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  // rows whose locked category is temporarily open for changing
+  const [editingCat, setEditingCat] = useState<Record<string, boolean>>({});
 
   const [genderFilter, setGenderFilter] = useState<GenderFilter>("all");
-  const [ageFilter, setAgeFilter] = useState<AgeFilter>("all");
+  // const [ageFilter, setAgeFilter] = useState<AgeFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [stdFilter, setStdFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<TabKey>("absent");
   const [search, setSearch] = useState("");
@@ -488,13 +545,11 @@ export default function Attendance() {
   const [histNotice, setHistNotice] = useState<Notice>(null);
   const [histTab, setHistTab] = useState<HistTab>("all");
 
+  const rawKids = useRef<Record<string, Record<string, unknown>>>({});
+
   const isIn = (id: string) => id in marks;
   const isOut = (id: string) => !!marks[id]?.outTime;
   const isToday = viewMode === "today";
-
-  // ─── Load children + today's present list ───────────────────────────
-  // `signal` cancels the first run of React StrictMode's double effect (dev),
-  // so GET /kids and GET /attendance/present are not sent twice.
   const loadData = async (signal?: AbortSignal) => {
     setLoading(true);
     setNotice(null);
@@ -507,6 +562,11 @@ export default function Attendance() {
     // Children list (required)
     if (kidsRes.status === "fulfilled" && kidsRes.value.ok) {
       const kids = toArray<ApiKid>(await kidsRes.value.json().catch(() => []));
+      const raw: Record<string, Record<string, unknown>> = {};
+      kids.forEach((k) => {
+        raw[k.kidsId] = k as unknown as Record<string, unknown>;
+      });
+      rawKids.current = raw;
       setStudents(kids.map(toStudent));
     } else {
       setStudents([]);
@@ -551,9 +611,6 @@ export default function Attendance() {
   }, [marks, loading]);
 
   // ─── Auto check-out at 6 PM ─────────────────────────────────────────
-  // Once the clock passes 6 PM, everyone who is checked in but not yet checked
-  // out gets out_time = 18:00:00 (or their check-in time if they came later).
-  // Runs once per page session; Undo Check Out afterwards is not overridden.
   const autoState = useRef({ running: false, done: false });
 
   const autoCheckOut = async () => {
@@ -699,6 +756,123 @@ export default function Attendance() {
     );
   };
 
+  // ─── Category update ────────────────────────────────────────────────
+
+  const putKidCategory = async (st: Student, category: string) => {
+    const raw = rawKids.current[st.id];
+    if (!raw) throw new Error("Child record not loaded. Press Refresh.");
+    const r = raw as Record<string, unknown>;
+    const body: Record<string, unknown> = {
+      ...r,
+      category: category || null,
+      // GET may still return the old field names; the API expects the new ones
+      mobileNo: r.mobileNo ?? r.selfNo ?? null,
+      fathermobileNo: r.fathermobileNo ?? r.fatherNo ?? null,
+      mothermobileNo: r.mothermobileNo ?? r.motherNo ?? null,
+      guardianmobileNo: r.guardianmobileNo ?? r.guardianNo ?? null,
+      updatedAt: null,
+      updatedBy: getUsername(),
+    };
+    // old field names are no longer part of the API
+    [
+      "selfNo",
+      "fatherNo",
+      "motherNo",
+      "guardianNo",
+      "momNo",
+      "dadNo",
+      "occupation",
+    ].forEach((key) => delete body[key]);
+    const res = await fetch(`${KIDS_URL}/${encodeURIComponent(st.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    rawKids.current[st.id] = body;
+  };
+
+  const syncAttendanceCategory = async (st: Student, category: string) => {
+    if (!isIn(st.id)) return;
+    const m = marks[st.id];
+    await postJson(
+      ATTENDANCE_URL,
+      buildRecord({ ...st, category }, "PRESENT", m.inTime, m.outTime || null),
+    );
+  };
+
+  const handleCategory = async (st: Student, category: string) => {
+    if (!category || category === st.category) return;
+    if (busy[st.id] || bulkBusy) return;
+    setRowBusy(st.id, true);
+    setNotice(null);
+    try {
+      await putKidCategory(st, category);
+      setStudents((prev) =>
+        prev.map((x) => (x.id === st.id ? { ...x, category } : x)),
+      );
+      try {
+        await syncAttendanceCategory(st, category);
+      } catch (err) {
+        setNotice({
+          type: "error",
+          text: `Category saved for ${st.name}, but today's attendance record could not be updated. ${err instanceof Error ? err.message : ""}`,
+        });
+      }
+    } catch (err) {
+      setNotice({
+        type: "error",
+        text: `Could not update the category of ${st.name}. ${err instanceof Error ? err.message : ""}`,
+      });
+    } finally {
+      setRowBusy(st.id, false);
+    }
+  };
+
+  // Set one category for every selected child that has NO category yet
+  const runBulkCategory = async (category: string) => {
+    if (bulkBusy || !category) return;
+    const list = selectedList.filter((st) => !st.category);
+    const skipped = selectedList.length - list.length;
+    if (list.length === 0) {
+      setNotice({
+        type: "error",
+        text: "Everyone selected already has a category.",
+      });
+      return;
+    }
+    setBulkBusy(true);
+    setNotice(null);
+    const results = await Promise.allSettled(
+      list.map(async (st) => {
+        await putKidCategory(st, category);
+        await syncAttendanceCategory(st, category).catch(() => undefined);
+      }),
+    );
+    const okIds = new Set(
+      list
+        .filter((_, i) => results[i].status === "fulfilled")
+        .map((st) => st.id),
+    );
+    const failed = list.length - okIds.size;
+    setStudents((prev) =>
+      prev.map((x) => (okIds.has(x.id) ? { ...x, category } : x)),
+    );
+    setSelected({});
+    setNotice(
+      failed === 0
+        ? {
+            type: "success",
+            text: `${okIds.size} children set to ${category}.${skipped ? ` ${skipped} skipped (already had a category).` : ""}`,
+          }
+        : {
+            type: "error",
+            text: `${okIds.size} updated, ${failed} failed. Try the failed ones again.`,
+          },
+    );
+    setBulkBusy(false);
+  };
+
   // ─── Date-wise / history view ───────────────────────────────────────
   const changeMode = (m: ViewMode) => {
     setViewMode(m);
@@ -814,8 +988,8 @@ export default function Attendance() {
   };
 
   // ─── Derived lists ──────────────────────────────────────────────────
-  const ageRange =
-    AGE_OPTIONS.find((a) => a.key === ageFilter) ?? AGE_OPTIONS[0];
+  // const ageRange =
+  //   AGE_OPTIONS.find((a) => a.key === ageFilter) ?? AGE_OPTIONS[0];
 
   // unique standards present in the data (numbers first, then text)
   const stdOptions = Array.from(
@@ -832,13 +1006,35 @@ export default function Attendance() {
   const visibleStudents = students.filter(
     (st) =>
       (genderFilter === "all" || st.gender === genderFilter) &&
-      (stdFilter === "all" || st.stdRaw === stdFilter) &&
-      (ageFilter === "all" ||
-        (st.age !== null && st.age >= ageRange.min && st.age <= ageRange.max)),
+      (categoryFilter === "all" ||
+        (categoryFilter === "none"
+          ? st.category === ""
+          : st.category === categoryFilter)) &&
+      (stdFilter === "all" || st.stdRaw === stdFilter),
+    // (ageFilter === "all" ||
+    //   (st.age !== null && st.age >= ageRange.min && st.age <= ageRange.max)),
   );
   const checkedInList = visibleStudents.filter((st) => isIn(st.id));
   const checkedOutList = visibleStudents.filter((st) => isOut(st.id));
   const absentList = visibleStudents.filter((st) => !isIn(st.id));
+
+  // category chips: checked in / expected (ignores the category filter itself)
+  const catChips = [...CATEGORIES, ""].map((c) => {
+    const all = students.filter(
+      (st) =>
+        st.category === c &&
+        (genderFilter === "all" || st.gender === genderFilter) &&
+        (stdFilter === "all" || st.stdRaw === stdFilter),
+
+    );
+    return {
+      key: (c || "none") as CategoryFilter,
+      label: c || "Not set",
+      value: c,
+      expected: all.length,
+      here: all.filter((st) => isIn(st.id)).length,
+    };
+  });
 
   const tabData: Record<TabKey, Student[]> = {
     jst: visibleStudents,
@@ -854,17 +1050,22 @@ export default function Attendance() {
       !q ||
       (st.id ?? "").toLowerCase().includes(q) ||
       st.name.toLowerCase().includes(q) ||
+      st.category.toLowerCase().includes(q) ||
       st.mobile.includes(q) ||
       (qDigits !== "" && digits(st.mobile).includes(qDigits)) ||
       st.place.toLowerCase().includes(q) ||
       st.standard.toLowerCase().includes(q),
   );
 
-  // history rows, respecting the gender / age / standard filters
+  // history rows, respecting the gender / age / standard / category filters
   const visibleIds = new Set(visibleStudents.map((st) => st.id));
   const knownIds = new Set(students.map((st) => st.id));
-  const histScoped = histRows.filter(
-    (r) => !knownIds.has(r.kidsId) || visibleIds.has(r.kidsId),
+  const categoryOf = (id: string) =>
+    students.find((st) => st.id === id)?.category ?? "";
+  const histScoped = histRows.filter((r) =>
+    categoryFilter === "all" && !knownIds.has(r.kidsId)
+      ? true
+      : knownIds.has(r.kidsId) && visibleIds.has(r.kidsId),
   );
   const histByTab: Record<HistTab, HistRow[]> = {
     all: histScoped,
@@ -877,6 +1078,7 @@ export default function Attendance() {
       !q ||
       r.kidsId.toLowerCase().includes(q) ||
       r.name.toLowerCase().includes(q) ||
+      categoryOf(r.kidsId).toLowerCase().includes(q) ||
       r.date.includes(q),
   );
 
@@ -1275,7 +1477,7 @@ export default function Attendance() {
       fontWeight: 600,
     },
     tableResponsive: { overflow: "auto", flex: 1, minHeight: 0 },
-    table: { width: "100%", borderCollapse: "collapse", minWidth: "840px" },
+    table: { width: "100%", borderCollapse: "collapse", minWidth: "960px" },
     th: {
       padding: "11px 16px",
       textAlign: "left",
@@ -1433,6 +1635,71 @@ export default function Attendance() {
     opacity: disabled ? 0.5 : 1,
   });
 
+  // coloured pill for a category (also used in the history view)
+  const catBadge = (cat: string): CSSProperties => {
+    const c = CATEGORY_COLORS[cat] ?? CATEGORY_COLORS[""];
+    return {
+      background: c.bg,
+      color: c.fg,
+      borderRadius: "20px",
+      padding: "3px 10px",
+      fontSize: "11px",
+      fontWeight: 700,
+      whiteSpace: "nowrap",
+    };
+  };
+
+  // Category cell shown on every row.
+  //   category set        -> locked badge + "Change" button
+  //   category empty      -> dropdown (amber border) to set it
+  //   after pressing Change -> dropdown to pick a new value
+  const categorySelect = (st: Student) => {
+    if (st.category && !editingCat[st.id]) {
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={catBadge(st.category)}>{st.category}</span>
+          <button
+            type="button"
+            style={{ ...s.clearBtn, padding: "3px 8px", fontSize: "11px" }}
+            disabled={!!busy[st.id] || bulkBusy}
+            onClick={() => setEditingCat((p) => ({ ...p, [st.id]: true }))}
+          >
+            Change
+          </button>
+        </span>
+      );
+    }
+
+    return (
+      <select
+        className="att-catsel"
+        style={
+          st.category
+            ? undefined
+            : {
+                borderColor: "#f59e0b",
+                background: "#fffbeb",
+                color: "#92400e",
+              }
+        }
+        value={st.category}
+        disabled={!!busy[st.id] || bulkBusy}
+        aria-label={`Category of ${st.name}`}
+        onChange={async (e) => {
+          await handleCategory(st, e.target.value);
+          setEditingCat((p) => ({ ...p, [st.id]: false }));
+        }}
+      >
+        <option value="">Select</option>
+        {CATEGORIES.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+    );
+  };
+
   // row actions (shared by the table and the mobile cards)
   //   not in            -> Check In
   //   in, not out       -> Check Out  +  Not Attended
@@ -1500,6 +1767,27 @@ export default function Attendance() {
     isOut(st.id) ? (
       <span style={s.outBadge}>Out {formatTime(marks[st.id].outTime)}</span>
     ) : null;
+
+  // mobile card: "9080635093 · 1 yr · 3rd · Place" (empty parts are skipped)
+  const cardMeta = (st: Student) => {
+    const parts = [
+      st.age !== null ? `${st.age} ${st.age === 1 ? "yr" : "yrs"}` : "",
+      st.standard !== "—" ? st.standard : "",
+      st.place !== "—" ? st.place : "",
+    ].filter(Boolean);
+    return (
+      <div className="att-meta">
+        {st.mobile !== "—" ? (
+          <a className="att-tel" href={`tel:${st.mobile}`}>
+            {st.mobile}
+          </a>
+        ) : (
+          "No mobile"
+        )}
+        {parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}
+      </div>
+    );
+  };
 
   return (
     <div className="attendance-page" style={s.page}>
@@ -1584,7 +1872,33 @@ export default function Attendance() {
           ))}
         </div>
 
-        <div style={s.card}>
+        {/* Category chips: checked in / expected. Click one to filter. */}
+        <div className="att-catrow">
+          {catChips.map((c) => {
+            const col = CATEGORY_COLORS[c.value] ?? CATEGORY_COLORS[""];
+            return (
+              <button
+                key={c.key}
+                type="button"
+                className={`att-catchip${categoryFilter === c.key ? " on" : ""}`}
+                style={{ background: col.bg, color: col.fg }}
+                title="Click to filter by this category"
+                onClick={() => {
+                  setCategoryFilter(categoryFilter === c.key ? "all" : c.key);
+                  setPage(1);
+                  setSelected({});
+                }}
+              >
+                {c.label}
+                <small>
+                  {c.here} / {c.expected}
+                </small>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="att-main" style={s.card}>
           <div className="att-tabs" style={s.tabBar}>
             {tabList.map((t) => (
               <button
@@ -1673,7 +1987,7 @@ export default function Attendance() {
               <input
                 style={s.searchInput}
                 type="text"
-                placeholder="Search by ID, name, mobile, place..."
+                placeholder="Search by ID, name, mobile, place, category..."
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
@@ -1710,21 +2024,24 @@ export default function Attendance() {
                 </button>
               ))}
             </div>
-            <div className="att-seg" style={s.segment}>
-              {AGE_OPTIONS.map((a) => (
-                <button
-                  key={a.key}
-                  type="button"
-                  style={segBtnStyle(ageFilter === a.key)}
-                  onClick={() => {
-                    setAgeFilter(a.key);
-                    setPage(1);
-                    setSelected({});
-                  }}
-                >
-                  {a.label}
-                </button>
-              ))}
+
+            <div className="att-perpage" style={s.perPageWrap}>
+              <select
+                style={s.perPageSelect}
+                value={categoryFilter}
+                aria-label="Filter by category"
+                onChange={(e) => {
+                  setCategoryFilter(e.target.value as CategoryFilter);
+                  setPage(1);
+                  setSelected({});
+                }}
+              >
+                {CATEGORY_OPTIONS.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="att-perpage" style={s.perPageWrap}>
               <select
@@ -1750,6 +2067,7 @@ export default function Attendance() {
               <select
                 style={s.perPageSelect}
                 value={perPage}
+                aria-label="Rows per page"
                 onChange={(e) => {
                   setPerPage(Number(e.target.value));
                   setPage(1);
@@ -1797,6 +2115,21 @@ export default function Attendance() {
                   <EditIcon /> Mark Not Attended
                 </button>
               )}
+              <select
+                className="att-catsel"
+                value=""
+                disabled={bulkBusy}
+                aria-label="Set category for selected children without a category"
+                title="Only children with no category are updated"
+                onChange={(e) => void runBulkCategory(e.target.value)}
+              >
+                <option value="">Set category…</option>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 style={s.clearBtn}
@@ -1819,12 +2152,13 @@ export default function Attendance() {
                     {q ? "No matching records." : histEmpty}
                   </div>
                 ) : (
-                  <table style={{ ...s.table, minWidth: "720px" }}>
+                  <table style={{ ...s.table, minWidth: "820px" }}>
                     <thead>
                       <tr>
                         <th style={s.th}>Date</th>
                         <th style={s.th}>ID</th>
                         <th style={s.th}>Name</th>
+                        <th style={s.th}>Category</th>
                         <th style={s.th}>Check-in Time</th>
                         <th style={s.th}>Check-out Time</th>
                         <th style={s.th}>Status</th>
@@ -1839,6 +2173,11 @@ export default function Attendance() {
                           </td>
                           <td style={{ ...s.td, ...s.nameCell }}>
                             {r.name || "—"}
+                          </td>
+                          <td style={s.td}>
+                            <span style={catBadge(categoryOf(r.kidsId))}>
+                              {categoryOf(r.kidsId) || "Not set"}
+                            </span>
                           </td>
                           <td style={s.td}>
                             {r.inTime ? (
@@ -1893,6 +2232,9 @@ export default function Attendance() {
                         </div>
                         <div className="att-meta">{formatDate(r.date)}</div>
                         <div className="att-time">
+                          <span style={catBadge(categoryOf(r.kidsId))}>
+                            {categoryOf(r.kidsId) || "Not set"}
+                          </span>
                           {r.inTime && (
                             <span style={s.timeBadge}>
                               In {formatTime(r.inTime)}
@@ -1948,6 +2290,7 @@ export default function Attendance() {
                         <th style={s.th}>Action</th>
                         <th style={s.th}>ID</th>
                         <th style={s.th}>Name</th>
+                        <th style={s.th}>Category</th>
                         <th style={s.th}>Mobile</th>
 
                         {/* <th style={s.th}>Standard</th> */}
@@ -1973,6 +2316,7 @@ export default function Attendance() {
                             <span className="att-idchip">{st.id}</span>
                           </td>
                           <td style={{ ...s.td, ...s.nameCell }}>{st.name}</td>
+                          <td style={s.td}>{categorySelect(st)}</td>
                           <td style={s.td}>{st.mobile}</td>
                           {/* <td style={s.td}>{st.age ?? "—"}</td> */}
                           {/* <td style={s.td}>{st.standard}</td> */}
@@ -2006,7 +2350,7 @@ export default function Attendance() {
                 )}
               </div>
 
-              {/* Mobile: card list (name + details on the left, actions on the right) */}
+              {/* Mobile: card list (details on top, full-width actions below) */}
               <div className="att-cards">
                 {loading ? (
                   <div style={s.noData}>Loading children...</div>
@@ -2027,7 +2371,16 @@ export default function Attendance() {
                       </label>
                     )}
                     {pageRows.map((st) => (
-                      <div className="att-card" key={st.id}>
+                      <div
+                        className={`att-card${showSelect ? " att-card--sel" : ""}${
+                          isOut(st.id)
+                            ? " att-out"
+                            : isIn(st.id)
+                              ? " att-in"
+                              : ""
+                        }`}
+                        key={st.id}
+                      >
                         {showSelect && (
                           <input
                             type="checkbox"
@@ -2041,16 +2394,9 @@ export default function Attendance() {
                             {st.name}
                             <span className="att-idchip">{st.id}</span>
                           </div>
-                          <div className="att-meta">
-                            {st.mobile !== "—" ? (
-                              <a className="att-tel" href={`tel:${st.mobile}`}>
-                                {st.mobile}
-                              </a>
-                            ) : (
-                              "—"
-                            )}
-                            {st.age !== null ? ` · ${st.age} yrs` : ""}
-                            {` · ${st.standard} · ${st.place}`}
+                          {cardMeta(st)}
+                          <div className="att-cardcat">
+                            {categorySelect(st)}
                           </div>
                           {activeTab !== "absent" && isIn(st.id) && (
                             <div className="att-time">

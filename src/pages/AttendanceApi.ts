@@ -10,10 +10,15 @@ export interface ApiKid {
   age?: number | string | null;
   std?: string | null;
   religion?: string | null;
+  // current field names (ChildAdd saves these)
+  mobileNo?: string | null;
+  mothermobileNo?: string | null;
+  fathermobileNo?: string | null;
+  guardianmobileNo?: string | null;
+  // older field names – kept as fallback
   selfNo?: string | null;
   motherNo?: string | null;
   fatherNo?: string | null;
-  // older field names – kept as fallback in case the API still sends them
   momNo?: string | null;
   dadNo?: string | null;
   guardianNo?: string | null;
@@ -71,10 +76,27 @@ export const todayIso = () => isoDate(new Date());
 export const isSunday = (iso: string) =>
   new Date(`${iso}T00:00:00`).getDay() === 0;
 
-export const weekBefore = (iso: string) => {
+// iso date + n days (n can be negative)
+export const shiftDays = (iso: string, n: number) => {
   const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() - 7);
+  d.setDate(d.getDate() + n);
   return isoDate(d);
+};
+
+export const weekBefore = (iso: string) => shiftDays(iso, -7);
+
+// The Sunday strictly before this date (date - 7 when date is a Sunday)
+export const previousSunday = (iso: string) => {
+  let d = shiftDays(iso, -1);
+  while (!isSunday(d)) d = shiftDays(d, -1);
+  return d;
+};
+
+// Latest Sunday on or before today
+export const latestSunday = () => {
+  let d = todayIso();
+  while (!isSunday(d)) d = shiftDays(d, -1);
+  return d;
 };
 
 const MONTHS = [
@@ -91,10 +113,20 @@ const MONTHS = [
   "Nov",
   "Dec",
 ];
+
 export const formatDate = (iso: string) => {
   if (!iso) return "—";
   const [y, m, d] = iso.split("-");
   return `${d} ${MONTHS[Number(m) - 1]} ${y}`;
+};
+
+// "09:15" -> "09:15 AM"  (empty -> "—")
+export const formatHm = (hhmm: string) => {
+  if (!hhmm) return "—";
+  const [h, m] = hhmm.split(":").map(Number);
+  const suffix = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${pad(h12)}:${pad(m)} ${suffix}`;
 };
 
 export const toArray = <T>(data: unknown): T[] => {
@@ -123,27 +155,49 @@ export const stdOrder = (std?: string | null) => {
 };
 
 export const toKid = (k: ApiKid): Kid => {
-  const motherNo = k.motherNo || k.momNo || "";
-  const fatherNo = k.fatherNo || k.dadNo || "";
+  const selfNo = k.mobileNo || k.selfNo || "";
+  const motherNo = k.mothermobileNo || k.motherNo || k.momNo || "";
+  const fatherNo = k.fathermobileNo || k.fatherNo || k.dadNo || "";
+  const guardianNo = k.guardianmobileNo || k.guardianNo || "";
   return {
     id: k.kidsId,
     name: k.name,
     gender: k.gender === "Male" || k.gender === "Female" ? k.gender : "",
     age: Number(k.age) || 0,
     std: k.std || "",
-    mobile: k.selfNo || fatherNo || motherNo || k.guardianNo || "",
-    selfNo: k.selfNo || "",
+    mobile: selfNo || fatherNo || motherNo || guardianNo,
+    selfNo,
     motherNo,
     fatherNo,
-    guardianNo: k.guardianNo || "",
+    guardianNo,
     address1: k.address1 || "",
     address2: k.address2 || "",
     city: k.city || "",
     state: k.state || "",
-    place: k.address2 || k.address1 || k.city || k.state || "—",
+    place: k.address1 || k.address2 || k.city || k.state || "—",
     religion: k.religion || "Not specified",
     createdDate: k.createdAt ? String(k.createdAt).slice(0, 10) : "",
   };
+};
+
+export const CATEGORIES = ["Outsider", "Staff Kid", "NLS Kid"] as const;
+export type Category = (typeof CATEGORIES)[number];
+
+export const CATEGORY_COLORS: Record<string, { bg: string; fg: string }> = {
+  Outsider: { bg: "#fee2e2", fg: "#b91c1c" },
+  "Staff Kid": { bg: "#dbeafe", fg: "#1d4ed8" },
+  "NLS Kid": { bg: "#dcfce7", fg: "#15803d" },
+  "": { bg: "#f3f4f6", fg: "#6b7280" },
+};
+
+// maps legacy values like "STAFF KIDS" / "NLS KIDS" to the canonical ones
+export const normCategory = (raw?: string | null): string => {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (!s) return "";
+  if (s.startsWith("staff")) return "Staff Kid";
+  if (s.startsWith("nls")) return "NLS Kid";
+  if (s.startsWith("out")) return "Outsider";
+  return "";
 };
 
 export const readError = async (res: Response, fallback: string) => {
@@ -297,10 +351,6 @@ export const clearAttendanceCaches = () => {
   }
 };
 
-// ─── Follow-up "contacted" marks (stored on the server, not in the browser) ─
-// ASSUMED endpoints – change to match your backend:
-//   GET  /api/attendance/followup/contacted  -> [{ kidsId, contactedDate }]
-//   POST /api/attendance/followup/contacted  body { kidsId, contactedDate }
 export const CONTACTED_URL = `${ATTENDANCE_URL}/followup/contacted`;
 
 interface ApiContacted {

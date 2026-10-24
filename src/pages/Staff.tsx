@@ -4,10 +4,14 @@ import Header from "../components/Header";
 
 // ─── API ────────────────────────────────────────────────────────────────
 const API_BASE_URL = "/api";
-const STAFF_ALL_URL = `${API_BASE_URL}/staff/all`;
-const STAFF_ADD_URL = `${API_BASE_URL}/staff/add`;
-const STAFF_UPDATE_URL = `${API_BASE_URL}/staff/update`;
-const STAFF_CHECKIN_URL = `${API_BASE_URL}/staff/checkin`;
+const USERS_URL = `/jrmobile/users`; // GET list | PUT /{id} | DELETE /{id}
+const STAFF_ALL_URL = USERS_URL;
+const STAFF_ADD_URL = `/jrmobile/register`; // POST
+const STAFF_CHECKIN_URL = `${API_BASE_URL}/staff/checkin`; // POST
+const STAFF_CHECKOUT_URL = `${API_BASE_URL}/staff/checkout`; // PUT
+const STAFF_ATT_ALL_URL = `${API_BASE_URL}/staff/all`; // GET
+const STAFF_ATT_UPDATE_URL = `${API_BASE_URL}/staff/update`; // PUT /{id}
+const STAFF_ATT_DELETE_URL = `${API_BASE_URL}/staff/delete`; // DELETE /{id}
 const STAFF_BY_STAFF_URL = `${API_BASE_URL}/staff/by-staff`;
 const STAFF_BY_DATE_URL = `${API_BASE_URL}/staff/by-date`;
 const STAFF_RANGE_URL = `${API_BASE_URL}/staff/range`;
@@ -16,7 +20,7 @@ const STAFF_RANGE_URL = `${API_BASE_URL}/staff/range`;
 interface ApiStaff {
   id?: string | number;
   staffId?: string;
-  staffName?: string;
+  userName?: string;
   name?: string;
   department?: string;
   dept?: string;
@@ -42,12 +46,13 @@ interface FormState {
   dept: string;
   mobile: string;
   role: string;
+  password: string;
 }
 
 interface ApiAttendance {
   id?: string | number;
   staffId?: string;
-  staffName?: string;
+  userName?: string;
   date?: string;
   attendanceDate?: string;
   checkIn?: string;
@@ -59,8 +64,9 @@ interface ApiAttendance {
 
 interface AttRow {
   key: string;
+  id: string;
   staffId: string;
-  staffName: string;
+  userName: string;
   date: string;
   inTime: string;
   outTime: string;
@@ -70,7 +76,7 @@ interface AttRow {
 type Tab = "list" | "attendance";
 type AttTab = "all" | "checkedIn" | "checkedOut" | "absent";
 type Notice = { type: "error" | "success"; text: string } | null;
-type AttMode = "today" | "date" | "staff" | "range";
+type AttMode = "today" | "all" | "date" | "staff" | "range";
 
 // ─── Constants ──────────────────────────────────────────────────────────
 const emptyForm: FormState = {
@@ -79,6 +85,7 @@ const emptyForm: FormState = {
   dept: "",
   mobile: "",
   role: "",
+  password: "",
 };
 const ROLES = ["Teacher", "Coordinator", "Volunteer", "Admin", "Helper"];
 const PAGE_SIZE_OPTIONS = [5, 10, 20];
@@ -116,7 +123,7 @@ const toArray = <T,>(data: unknown): T[] => {
 const toStaff = (a: ApiStaff): Staff => ({
   key: String(a.id ?? a.staffId ?? ""),
   staffId: a.staffId ?? "",
-  name: a.staffName ?? a.name ?? "",
+  name: a.userName ?? a.name ?? "",
   dept: a.department ?? a.dept ?? a.staffDpt ?? "",
   mobile: a.mobile ?? a.staffMobile ?? "",
   role: a.role ?? a.staffRole ?? "",
@@ -124,8 +131,9 @@ const toStaff = (a: ApiStaff): Staff => ({
 
 const toAtt = (a: ApiAttendance): AttRow => ({
   key: String(a.id ?? `${a.staffId ?? ""}-${a.date ?? a.attendanceDate ?? ""}`),
+  id: String(a.id ?? ""),
   staffId: a.staffId ?? "",
-  staffName: a.staffName ?? "",
+  userName: a.userName ?? "",
   date: String(a.date ?? a.attendanceDate ?? "").slice(0, 10),
   inTime: String(a.checkIn ?? a.inTime ?? "").slice(0, 8),
   outTime: String(a.checkOut ?? a.outTime ?? "").slice(0, 8),
@@ -142,14 +150,6 @@ const readError = async (res: Response, fallback: string) => {
     msg = raw.trim().slice(0, 200);
   }
   return `${fallback} (HTTP ${res.status}${msg ? `: ${msg}` : ""})`;
-};
-
-const getUsername = () => {
-  try {
-    return localStorage.getItem("username") || "system";
-  } catch {
-    return "system";
-  }
 };
 
 const digits = (t: string) => t.replace(/\D/g, "");
@@ -193,6 +193,7 @@ html, body, #root { overflow: hidden !important; height: 100%; }
 .st .st-in { background: #7c3aed; color: #fff; border: none; padding: 7px 14px; font-size: 12px; border-radius: 8px; font-weight: 600; }
 .st .st-out { background: #ea580c; color: #fff; border: none; padding: 7px 14px; font-size: 12px; border-radius: 8px; font-weight: 600; }
 .st .st-red { background: #fff; color: #dc2626; border: 1.5px solid #fecaca; padding: 6px 12px; font-size: 12px; border-radius: 8px; font-weight: 600; }
+.st .st-del { height: 30px; padding: 0 12px; cursor: pointer; }
 
 /* notice */
 .st-msg { padding: 8px 12px; border-radius: 8px; font-size: 13px; flex: none; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
@@ -385,6 +386,7 @@ export default function StaffPage() {
     if (!form.dept.trim()) e.dept = "Enter the department.";
     if (!/^[0-9+\-\s]{7,15}$/.test(form.mobile.trim())) e.mobile = "Enter a valid mobile number.";
     if (!form.role.trim()) e.role = "Enter the role.";
+    if (!editKey && !form.password.trim()) e.password = "Enter a password.";
     const dup = list.find(
       (s) => s.staffId.toLowerCase() === form.staffId.trim().toLowerCase() && s.key !== editKey,
     );
@@ -400,7 +402,14 @@ export default function StaffPage() {
   };
 
   const edit = (s: Staff) => {
-    setForm({ staffId: s.staffId, name: s.name, dept: s.dept, mobile: s.mobile, role: s.role });
+    setForm({
+      staffId: s.staffId,
+      name: s.name,
+      dept: s.dept,
+      mobile: s.mobile,
+      role: s.role,
+      password: "",
+    });
     setEditKey(s.key);
     setErrors({});
     setMsg(null);
@@ -412,16 +421,15 @@ export default function StaffPage() {
     setMsg(null);
     const body = {
       staffId: form.staffId.trim(),
-      staffName: form.name.trim(),
-      department: form.dept.trim(),
+      userName: form.name.trim(),
+      dept: form.dept.trim(),
       mobile: form.mobile.trim(),
       role: form.role.trim(),
-      updatedBy: getUsername(),
-      ...(editKey ? {} : { createdBy: getUsername() }),
+      ...(form.password.trim() ? { password: form.password.trim() } : {}),
     };
     try {
       const res = await fetch(
-        editKey ? `${STAFF_UPDATE_URL}/${encodeURIComponent(editKey)}` : STAFF_ADD_URL,
+        editKey ? `${USERS_URL}/${encodeURIComponent(editKey)}` : STAFF_ADD_URL,
         {
           method: editKey ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
@@ -429,13 +437,27 @@ export default function StaffPage() {
         },
       );
       if (!res.ok) throw new Error(await readError(res, editKey ? "Update failed" : "Save failed"));
-      setMsg({ type: "success", text: `${body.staffName} was ${editKey ? "updated" : "added"}.` });
+      setMsg({ type: "success", text: `${body.userName} was ${editKey ? "updated" : "added"}.` });
       reset();
       await load();
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "Could not save." });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const remove = async (s: Staff) => {
+    if (!window.confirm(`Delete ${s.name}?`)) return;
+    setMsg(null);
+    try {
+      const res = await fetch(`${USERS_URL}/${encodeURIComponent(s.key)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await readError(res, "Delete failed"));
+      setMsg({ type: "success", text: `${s.name} was deleted.` });
+      if (editKey === s.key) reset();
+      await load();
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "Could not delete." });
     }
   };
 
@@ -467,6 +489,7 @@ export default function StaffPage() {
         throw new Error("Enter staff ID, from and to dates.");
       return `${STAFF_RANGE_URL}?staffId=${encodeURIComponent(attStaffId.trim())}&from=${attFrom}&to=${attTo}`;
     }
+    if (attMode === "all") return STAFF_ATT_ALL_URL;
     return `${STAFF_BY_DATE_URL}?date=${todayIso()}`;
   };
 
@@ -515,13 +538,19 @@ export default function StaffPage() {
   }, [tab, attMode]);
 
   // ── Derived attendance lists ─────────────────────────────────────────
-  const todayRows = attRows.filter((r) => r.date === todayIso());
+  // attendance API has no name -> join with staff list by staffId
+  const nameById = new Map(list.map((s) => [s.staffId, s.name]));
+  const namedRows = attRows.map((r) => ({
+    ...r,
+    userName: r.userName || nameById.get(r.staffId) || "",
+  }));
+  const todayRows = namedRows.filter((r) => r.date === todayIso());
   const inList = todayRows.filter((r) => r.inTime && !r.outTime);
   const outList = todayRows.filter((r) => r.outTime);
   const absentList = list.filter(
     (s) => !todayRows.some((r) => r.staffId === s.staffId && r.inTime),
   );
-  const allList = attRows;
+  const allList = namedRows;
 
   const byTab: Record<AttTab, AttRow[]> = {
     all: allList,
@@ -529,8 +558,9 @@ export default function StaffPage() {
     checkedOut: outList,
     absent: absentList.map((s) => ({
       key: s.staffId,
+      id: "",
       staffId: s.staffId,
-      staffName: s.name,
+      userName: s.name,
       date: todayIso(),
       inTime: "",
       outTime: "",
@@ -543,7 +573,7 @@ export default function StaffPage() {
   const filteredAtt = byTab[attTab].filter(
     (r) =>
       !aq ||
-      r.staffName.toLowerCase().includes(aq) ||
+      r.userName.toLowerCase().includes(aq) ||
       r.staffId.toLowerCase().includes(aq) ||
       (aqDig !== "" && digits(r.staffId).includes(aqDig)),
   );
@@ -569,111 +599,64 @@ export default function StaffPage() {
   // ── Single check-in / out / absent ──────────────────────────────────
   const setRowBusy = (id: string, v: boolean) => setBusy((p) => ({ ...p, [id]: v }));
 
-  const runCheckIn = async (staffId: string) => {
+  const sendJson = async (url: string, method: string, body: unknown, fail: string) => {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await readError(res, fail));
+  };
+
+  const doCheckIn = (staffId: string, stamp = nowTime()) =>
+    sendJson(STAFF_CHECKIN_URL, "POST", { staffId, inTime: stamp, date: todayIso() }, "Check-in failed");
+
+  const doCheckOut = (r: AttRow, stamp = nowTime()) =>
+    sendJson(STAFF_CHECKOUT_URL, "PUT", { staffId: r.staffId, outTime: stamp, date: r.date }, "Check-out failed");
+
+  const doUndoOut = (r: AttRow) =>
+    sendJson(
+      `${STAFF_ATT_UPDATE_URL}/${encodeURIComponent(r.id)}`,
+      "PUT",
+      { staffId: r.staffId, date: r.date, inTime: r.inTime, outTime: null },
+      "Undo failed",
+    );
+
+  const doRemove = async (r: AttRow) => {
+    const res = await fetch(`${STAFF_ATT_DELETE_URL}/${encodeURIComponent(r.id)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(await readError(res, "Remove failed"));
+  };
+
+  const runRow = async (staffId: string, fn: () => Promise<void>, fallback: string) => {
     setRowBusy(staffId, true);
     setAttMsg(null);
     try {
-      const res = await fetch(STAFF_CHECKIN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          staffId,
-          inTime: nowTime(),
-          date: todayIso(),
-          status: "PRESENT",
-          createdBy: getUsername(),
-        }),
-      });
-      if (!res.ok) throw new Error(await readError(res, "Check-in failed"));
+      await fn();
       await fetchAttendance();
     } catch (e) {
-      setAttMsg({ type: "error", text: e instanceof Error ? e.message : "Could not check in." });
+      setAttMsg({ type: "error", text: e instanceof Error ? e.message : fallback });
     } finally {
       setRowBusy(staffId, false);
     }
   };
 
-  const runCheckOut = async (staffId: string) => {
-    setRowBusy(staffId, true);
-    setAttMsg(null);
-    try {
-      const res = await fetch(STAFF_CHECKIN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          staffId,
-          outTime: nowTime(),
-          date: todayIso(),
-          status: "PRESENT",
-          updatedBy: getUsername(),
-        }),
-      });
-      if (!res.ok) throw new Error(await readError(res, "Check-out failed"));
-      await fetchAttendance();
-    } catch (e) {
-      setAttMsg({ type: "error", text: e instanceof Error ? e.message : "Could not check out." });
-    } finally {
-      setRowBusy(staffId, false);
-    }
-  };
-
-  const runUndoOut = async (staffId: string) => {
-    setRowBusy(staffId, true);
-    setAttMsg(null);
-    try {
-      const res = await fetch(STAFF_CHECKIN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          staffId,
-          outTime: null,
-          date: todayIso(),
-          status: "PRESENT",
-          updatedBy: getUsername(),
-        }),
-      });
-      if (!res.ok) throw new Error(await readError(res, "Undo failed"));
-      await fetchAttendance();
-    } catch (e) {
-      setAttMsg({ type: "error", text: e instanceof Error ? e.message : "Could not undo check-out." });
-    } finally {
-      setRowBusy(staffId, false);
-    }
-  };
-
-  const runMarkAbsent = async (staffId: string, name: string) => {
-    if (!window.confirm(`Mark ${name} as absent today?`)) return;
-    setRowBusy(staffId, true);
-    setAttMsg(null);
-    try {
-      const res = await fetch(STAFF_CHECKIN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          staffId,
-          date: todayIso(),
-          status: "ABSENT",
-          createdBy: getUsername(),
-        }),
-      });
-      if (!res.ok) throw new Error(await readError(res, "Mark absent failed"));
-      await fetchAttendance();
-    } catch (e) {
-      setAttMsg({ type: "error", text: e instanceof Error ? e.message : "Could not mark absent." });
-    } finally {
-      setRowBusy(staffId, false);
-    }
+  const runCheckIn = (staffId: string) => runRow(staffId, () => doCheckIn(staffId), "Could not check in.");
+  const runCheckOut = (r: AttRow) => runRow(r.staffId, () => doCheckOut(r), "Could not check out.");
+  const runUndoOut = (r: AttRow) => runRow(r.staffId, () => doUndoOut(r), "Could not undo check-out.");
+  const runMarkAbsent = (r: AttRow) => {
+    if (!window.confirm(`Mark ${r.userName || r.staffId} as absent? This removes the attendance record.`)) return;
+    return runRow(r.staffId, () => doRemove(r), "Could not mark absent.");
   };
 
   // ── Bulk actions ─────────────────────────────────────────────────────
   const runBulk = async (action: "in" | "out" | "absent") => {
     if (bulkBusy || selectedList.length === 0) return;
-    const list = selectedList.filter((r) => {
+    const rows = selectedList.filter((r) => {
       if (action === "in") return !r.inTime;
       if (action === "out") return r.inTime && !r.outTime;
-      return r.status !== "ABSENT";
+      return !!r.id;
     });
-    if (list.length === 0) {
+    if (rows.length === 0) {
       setAttMsg({
         type: "error",
         text:
@@ -685,29 +668,15 @@ export default function StaffPage() {
       });
       return;
     }
-    if (action === "absent" && !window.confirm(`Mark ${list.length} staff as absent?`)) return;
+    if (action === "absent" && !window.confirm(`Mark ${rows.length} staff as absent? This removes their attendance records.`)) return;
 
     setBulkBusy(true);
     setAttMsg(null);
     try {
       const stamp = nowTime();
       await Promise.all(
-        list.map((r) =>
-          fetch(STAFF_CHECKIN_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              staffId: r.staffId,
-              inTime: action === "in" ? stamp : r.inTime || null,
-              outTime: action === "out" ? stamp : r.outTime || null,
-              date: todayIso(),
-              status: action === "absent" ? "ABSENT" : "PRESENT",
-              createdBy: getUsername(),
-              updatedBy: getUsername(),
-            }),
-          }).then(async (res) => {
-            if (!res.ok) throw new Error(await readError(res, "Bulk update failed"));
-          }),
+        rows.map((r) =>
+          action === "in" ? doCheckIn(r.staffId, stamp) : action === "out" ? doCheckOut(r, stamp) : doRemove(r),
         ),
       );
       setSelected({});
@@ -715,10 +684,10 @@ export default function StaffPage() {
         type: "success",
         text:
           action === "in"
-            ? `${list.length} staff checked in.`
+            ? `${rows.length} staff checked in.`
             : action === "out"
-              ? `${list.length} staff checked out.`
-              : `${list.length} staff marked absent.`,
+              ? `${rows.length} staff checked out.`
+              : `${rows.length} staff marked absent.`,
       });
       await fetchAttendance();
     } catch (e) {
@@ -729,13 +698,15 @@ export default function StaffPage() {
   };
 
   // ── JSX helpers ──────────────────────────────────────────────────────
-  const field = (k: keyof FormState, label: string, ph: string) => (
+  const field = (k: keyof FormState, label: string, ph: string, type = "text") => (
     <div>
       <label>{label}</label>
       <input
+        type={type}
         value={form[k]}
         placeholder={ph}
         inputMode={k === "mobile" ? "tel" : undefined}
+        autoComplete={type === "password" ? "new-password" : undefined}
         onChange={(e) => set(k, e.target.value)}
       />
       {errors[k] && <p className="st-err">{errors[k]}</p>}
@@ -777,7 +748,7 @@ export default function StaffPage() {
           type="button"
           className="st-red"
           disabled={rowBusy}
-          onClick={() => runUndoOut(row.staffId)}
+          onClick={() => runUndoOut(row)}
         >
           <EditIcon /> {busy[row.staffId] ? "Updating..." : "Undo Check Out"}
         </button>
@@ -790,7 +761,7 @@ export default function StaffPage() {
             type="button"
             className="st-out"
             disabled={rowBusy}
-            onClick={() => runCheckOut(row.staffId)}
+            onClick={() => runCheckOut(row)}
           >
             <LogoutIcon /> {busy[row.staffId] ? "Saving..." : "Check Out"}
           </button>
@@ -798,7 +769,7 @@ export default function StaffPage() {
             type="button"
             className="st-red"
             disabled={rowBusy}
-            onClick={() => runMarkAbsent(row.staffId, row.staffName)}
+            onClick={() => runMarkAbsent(row)}
           >
             <EditIcon /> Not Attended
           </button>
@@ -854,8 +825,7 @@ export default function StaffPage() {
                 >
                   {field("staffId", "Staff ID", "e.g. JR001")}
                   {field("name", "Staff Name", "Full name")}
-                  {field("dept", "Department", "e.g. Education")}
-                  {field("mobile", "Mobile", "e.g. 9876543210")}
+                  {field("dept", "Department", "e.g. Education")}             
                   <div>
                     <label>Role</label>
                     <input
@@ -869,6 +839,12 @@ export default function StaffPage() {
                     </datalist>
                     {errors.role && <p className="st-err">{errors.role}</p>}
                   </div>
+                  {field(
+                    "password",
+                    editKey ? "New Password (optional)" : "Password",
+                    editKey ? "Leave blank to keep current" : "Password",
+                    "password",
+                  )}
                   <div className="st-row" style={{ justifyContent: "flex-end" }}>
                     <button type="button" className="st-btn" onClick={reset} disabled={saving}>
                       {editKey ? "Cancel" : "Clear"}
@@ -921,7 +897,7 @@ export default function StaffPage() {
                           <th>Staff ID</th>
                           <th>Name</th>
                           <th>Department</th>
-                          <th>Mobile</th>
+                        
                           <th>Role</th>
                           <th>Action</th>
                         </tr>
@@ -932,18 +908,17 @@ export default function StaffPage() {
                             <td><b>{s.staffId}</b></td>
                             <td>{s.name}</td>
                             <td>{s.dept || "—"}</td>
-                            <td>
-                              {s.mobile ? (
-                                <a href={`tel:${s.mobile}`} style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}>
-                                  {s.mobile}
-                                </a>
-                              ) : "—"}
-                            </td>
+                           
                             <td>{s.role || "—"}</td>
                             <td>
-                              <button type="button" className="st-btn st-edit" onClick={() => edit(s)}>
-                                Edit
-                              </button>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button type="button" className="st-btn st-edit" onClick={() => edit(s)}>
+                                  Edit
+                                </button>
+                                <button type="button" className="st-red st-del" onClick={() => void remove(s)}>
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1023,6 +998,10 @@ export default function StaffPage() {
                       className={attMode === "today" ? "on" : ""}
                       onClick={() => { setAttMode("today"); setAttTab("all"); }}
                     >Today</button>
+                    <button
+                      className={attMode === "all" ? "on" : ""}
+                      onClick={() => setAttMode("all")}
+                    >All</button>
                     <button
                       className={attMode === "date" ? "on" : ""}
                       onClick={() => setAttMode("date")}
@@ -1146,7 +1125,7 @@ export default function StaffPage() {
                             <td>{rowActions(r)}</td>
                             <td>{formatDate(r.date)}</td>
                             <td><b>{r.staffId}</b></td>
-                            <td>{r.staffName || "—"}</td>
+                            <td>{r.userName || "—"}</td>
                             <td>
                               {r.inTime ? (
                                 <span className="st-inb">{formatTime(r.inTime)}</span>
@@ -1191,10 +1170,10 @@ export default function StaffPage() {
                             type="checkbox"
                             checked={!!selected[r.key]}
                             onChange={() => toggleOne(r.key)}
-                            aria-label={`Select ${r.staffName}`}
+                            aria-label={`Select ${r.userName}`}
                           />
                           <div className="st-minfo">
-                            <div className="st-mname">{r.staffName || r.staffId}</div>
+                            <div className="st-mname">{r.userName || r.staffId}</div>
                             <div className="st-mmeta">
                               <b>{r.staffId}</b> · {formatDate(r.date)}
                             </div>

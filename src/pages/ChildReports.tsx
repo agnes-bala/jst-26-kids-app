@@ -11,6 +11,7 @@
 // interface ApiPresentItem {
 //   kidsId?: string;
 //   inTime?: string | null;
+//   outTime?: string | null;
 //   status?: string;
 // }
 
@@ -22,13 +23,20 @@
 //   std?: string;
 //   religion?: string | null;
 //   selfNo?: string | null;
-//   momNo?: string | null;
-//   dadNo?: string | null;
+//   motherNo?: string | null;
+//   fatherNo?: string | null;
 //   guardianNo?: string | null;
 //   address1?: string | null;
 //   address2?: string | null;
+//   city?: string | null;
 //   state?: string | null;
 //   createdAt?: string | null;
+// }
+
+// // times of one child on one date ("HH:mm", outTime "" = not checked out)
+// interface PresentInfo {
+//   inTime: string;
+//   outTime: string;
 // }
 
 // // ─── Types ──────────────────────────────────────────────────────────────
@@ -44,11 +52,12 @@
 //   createdDate: string; // yyyy-mm-dd ("" when unknown)
 //   // full info (shown in the detail popup)
 //   selfNo: string;
-//   momNo: string;
-//   dadNo: string;
+//   motherNo: string;
+//   fatherNo: string;
 //   guardianNo: string;
 //   address1: string;
 //   address2: string;
+//   city: string;
 //   state: string;
 // }
 
@@ -57,6 +66,7 @@
 //   date: string; // yyyy-mm-dd
 //   status: "Present" | "Absent";
 //   checkInTime: string; // HH:mm (24h) – empty when absent
+//   checkOutTime: string; // HH:mm (24h) – empty when absent / not checked out
 // }
 
 // type TabKey =
@@ -113,7 +123,7 @@
 //   { key: "age", label: "Age Wise", groupHeader: "Age" },
 //   { key: "date", label: "Date Wise", groupHeader: "Date" },
 //   { key: "month", label: "Month Wise", groupHeader: "Month / Date" },
-//   { key: "district", label: "Area Wise", groupHeader: "District" },
+//   { key: "district", label: "District Wise", groupHeader: "District" },
 //   { key: "religion", label: "Religion Wise", groupHeader: "Religion" },
 //   { key: "status", label: "Present / Absent", groupHeader: "Status" },
 //   { key: "time", label: "Time Based", groupHeader: "Check-in Time Slot" },
@@ -199,16 +209,17 @@
 //   gender: k.gender || "—",
 //   age: Number(k.age) || 0,
 //   standard: formatStd(k.std),
-//   mobile: k.selfNo || k.dadNo || k.momNo || k.guardianNo || "—",
-//   district: k.address2 || k.address1 || k.state || "—",
+//   mobile: k.selfNo || k.fatherNo || k.motherNo || k.guardianNo || "—",
+//   district: k.address2 || k.address1 || k.city || k.state || "—",
 //   religion: k.religion || "Not specified",
 //   createdDate: k.createdAt ? String(k.createdAt).slice(0, 10) : "",
 //   selfNo: k.selfNo || "",
-//   momNo: k.momNo || "",
-//   dadNo: k.dadNo || "",
+//   motherNo: k.motherNo || "",
+//   fatherNo: k.fatherNo || "",
 //   guardianNo: k.guardianNo || "",
 //   address1: k.address1 || "",
 //   address2: k.address2 || "",
+//   city: k.city || "",
 //   state: k.state || "",
 // });
 
@@ -331,7 +342,7 @@
 // let kidsAt = 0;
 // const presentCache = new Map<
 //   string,
-//   { at: number; p: Promise<Record<string, string>> }
+//   { at: number; p: Promise<Record<string, PresentInfo>> }
 // >();
 
 // const getKids = (): Promise<Child[]> => {
@@ -349,18 +360,21 @@
 //   return kidsPromise;
 // };
 
-// const getPresent = (date: string): Promise<Record<string, string>> => {
+// const getPresent = (date: string): Promise<Record<string, PresentInfo>> => {
 //   const hit = presentCache.get(date);
 //   if (hit && Date.now() - hit.at < TTL) return hit.p;
 //   const p = (async () => {
 //     const res = await fetch(`${ATTENDANCE_URL}/present?date=${date}`);
 //     if (!res.ok) throw new Error(String(res.status));
 //     const list = toArray<ApiPresentItem>(await res.json().catch(() => []));
-//     const present: Record<string, string> = {};
+//     const present: Record<string, PresentInfo> = {};
 //     list.forEach((it) => {
 //       if (!it.kidsId) return;
 //       if (it.status && it.status.toUpperCase() !== "PRESENT") return;
-//       present[it.kidsId] = toHHmm(it.inTime);
+//       present[it.kidsId] = {
+//         inTime: toHHmm(it.inTime),
+//         outTime: toHHmm(it.outTime),
+//       };
 //     });
 //     return present;
 //   })();
@@ -888,7 +902,7 @@
 // export default function ChildReports() {
 //   const [kids, setKids] = useState<Child[]>([]);
 //   const [presentByDate, setPresentByDate] = useState<
-//     Record<string, Record<string, string>>
+//     Record<string, Record<string, PresentInfo>>
 //   >({});
 //   const [loading, setLoading] = useState(true);
 //   const [error, setError] = useState("");
@@ -947,7 +961,7 @@
 //         }
 //         setLoading(true);
 
-//         const fetched: Record<string, Record<string, string>> = {};
+//         const fetched: Record<string, Record<string, PresentInfo>> = {};
 //         let failed = 0;
 //         const BATCH = 6;
 //         for (let i = 0; i < missing.length; i += BATCH) {
@@ -993,8 +1007,8 @@
 
 //     return dates.flatMap((date) =>
 //       kids.flatMap((c) => {
-//         const inTime = presentByDate[date][c.id];
-//         const isPresent = inTime !== undefined;
+//         const info = presentByDate[date][c.id];
+//         const isPresent = info !== undefined;
 //         if (!isPresent && c.createdDate && c.createdDate > date) return [];
 //         return [
 //           {
@@ -1002,7 +1016,8 @@
 //             recordId: `${c.id}-${date}`,
 //             date,
 //             status: isPresent ? ("Present" as const) : ("Absent" as const),
-//             checkInTime: isPresent ? inTime : "",
+//             checkInTime: isPresent ? info.inTime : "",
+//             checkOutTime: isPresent ? info.outTime : "",
 //           },
 //         ];
 //       }),
@@ -1222,8 +1237,7 @@
 //           date,
 //           ord: `1-${sortStr(g.sort)}`,
 //           level: 1,
-//           match: (x) =>
-//             x.date === date && getGroup(activeTab, x).key === g.key,
+//           match: (x) => x.date === date && getGroup(activeTab, x).key === g.key,
 //         },
 //         r,
 //       );
@@ -1305,10 +1319,12 @@
 //       Standard: r.standard,
 //       Mobile: r.mobile,
 //       District: r.district,
+//       City: r.city,
 //       Religion: r.religion,
 //       Date: formatDate(r.date),
 //       Status: r.status,
 //       "Check-in Time": r.checkInTime ? formatTime(r.checkInTime) : "",
+//       "Check-out Time": r.checkOutTime ? formatTime(r.checkOutTime) : "",
 //     }));
 
 //     const wb = XLSX.utils.book_new();
@@ -2082,10 +2098,10 @@
 //                   <Phone n={openRec.selfNo} />
 //                 </Row>
 //                 <Row label="Mother">
-//                   <Phone n={openRec.momNo} />
+//                   <Phone n={openRec.motherNo} />
 //                 </Row>
 //                 <Row label="Father">
-//                   <Phone n={openRec.dadNo} />
+//                   <Phone n={openRec.fatherNo} />
 //                 </Row>
 //                 <Row label="Guardian">
 //                   <Phone n={openRec.guardianNo} />
@@ -2096,8 +2112,11 @@
 //                 <Row label="Address 1">
 //                   <Val v={openRec.address1} />
 //                 </Row>
-//                 <Row label="District">
+//                 <Row label="Address 2">
 //                   <Val v={openRec.address2} />
+//                 </Row>
+//                 <Row label="City">
+//                   <Val v={openRec.city} />
 //                 </Row>
 //                 <Row label="State">
 //                   <Val v={openRec.state} />
@@ -2109,6 +2128,11 @@
 //                 <Row label="Status">{openRec.status}</Row>
 //                 <Row label="Check-in">
 //                   {openRec.checkInTime ? formatTime(openRec.checkInTime) : "—"}
+//                 </Row>
+//                 <Row label="Check-out">
+//                   {openRec.checkOutTime
+//                     ? formatTime(openRec.checkOutTime)
+//                     : "—"}
 //                 </Row>
 //                 <Row label="Overall">
 //                   {childPresent} / {childHistory.length} present
@@ -2136,6 +2160,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import * as XLSX from "xlsx";
 import Header from "../components/Header";
+import { normCategory, CATEGORIES, CATEGORY_COLORS } from "./AttendanceApi";
 
 // ─── API ────────────────────────────────────────────────────────────────
 const API_BASE_URL = "/api";
@@ -2153,15 +2178,23 @@ interface ApiKid {
   kidsId: string;
   name: string;
   gender?: string;
+  category?: string | null;
   age?: number | string;
   std?: string;
   religion?: string | null;
-  selfNo?: string | null;
+  // current API names
+  mobileNo?: string | null; // child's own mobile
   motherNo?: string | null;
   fatherNo?: string | null;
   guardianNo?: string | null;
-  address1?: string | null;
-  address2?: string | null;
+  staffId?: string | null;
+  // legacy names (older records)
+  selfNo?: string | null;
+  fathermobileNo?: string | null;
+  mothermobileNo?: string | null;
+  guardianmobileNo?: string | null;
+  address1?: string | null; // Place
+  address2?: string | null; // Area, town
   city?: string | null;
   state?: string | null;
   createdAt?: string | null;
@@ -2178,13 +2211,15 @@ interface Child {
   id: string; // kidsId
   name: string;
   gender: string;
+  category: string; // "Outsider" | "Staff Kid" | "NLS Kid" | "" (not set)
   age: number;
   standard: string;
   mobile: string; // best available number (for the table)
-  district: string;
+  district: string; // the child's Place (address1)
   religion: string;
   createdDate: string; // yyyy-mm-dd ("" when unknown)
   // full info (shown in the detail popup)
+  staffId: string;
   selfNo: string;
   motherNo: string;
   fatherNo: string;
@@ -2209,6 +2244,7 @@ type TabKey =
   | "month"
   | "district"
   | "religion"
+  | "category"
   | "status"
   | "time";
 
@@ -2245,6 +2281,7 @@ interface Filters {
   week: string;
   district: string;
   religion: string;
+  category: string; // "" = all, "none" = not set, else the category name
   gender: string;
   status: string;
   ageMin: string;
@@ -2259,6 +2296,7 @@ const TABS: { key: TabKey; label: string; groupHeader: string }[] = [
   { key: "month", label: "Month Wise", groupHeader: "Month / Date" },
   { key: "district", label: "District Wise", groupHeader: "District" },
   { key: "religion", label: "Religion Wise", groupHeader: "Religion" },
+  { key: "category", label: "Category Wise", groupHeader: "Category" },
   { key: "status", label: "Present / Absent", groupHeader: "Status" },
   { key: "time", label: "Time Based", groupHeader: "Check-in Time Slot" },
 ];
@@ -2270,6 +2308,7 @@ const emptyFilters: Filters = {
   week: "",
   district: "",
   religion: "",
+  category: "",
   gender: "",
   status: "",
   ageMin: "",
@@ -2331,31 +2370,41 @@ const toArray = <T,>(data: unknown): T[] => {
 
 const formatStd = (std?: string | null) => {
   if (!std) return "—";
-  if (!/^\d+$/.test(std)) return std;
+  if (!/^\d+$/.test(std)) return std; // "PRE KG", "LKG", "UKG", "College" ...
   const n = Number(std);
   const suffix = n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th";
   return `${n}${suffix}`;
 };
 
-const toChild = (k: ApiKid): Child => ({
-  id: k.kidsId,
-  name: k.name,
-  gender: k.gender || "—",
-  age: Number(k.age) || 0,
-  standard: formatStd(k.std),
-  mobile: k.selfNo || k.fatherNo || k.motherNo || k.guardianNo || "—",
-  district: k.address2 || k.address1 || k.city || k.state || "—",
-  religion: k.religion || "Not specified",
-  createdDate: k.createdAt ? String(k.createdAt).slice(0, 10) : "",
-  selfNo: k.selfNo || "",
-  motherNo: k.motherNo || "",
-  fatherNo: k.fatherNo || "",
-  guardianNo: k.guardianNo || "",
-  address1: k.address1 || "",
-  address2: k.address2 || "",
-  city: k.city || "",
-  state: k.state || "",
-});
+const toChild = (k: ApiKid): Child => {
+  // new API names first, legacy names as fallback
+  const selfNo = k.mobileNo || k.selfNo || "";
+  const fatherNo = k.fatherNo || k.fathermobileNo || "";
+  const motherNo = k.motherNo || k.mothermobileNo || "";
+  const guardianNo = k.guardianNo || k.guardianmobileNo || "";
+  return {
+    id: k.kidsId,
+    name: k.name,
+    gender: k.gender || "—",
+    category: normCategory(k.category),
+    age: Number(k.age) || 0,
+    standard: formatStd(k.std),
+    mobile: selfNo || fatherNo || motherNo || guardianNo || "—",
+    // Place = address1 (address2 is only "Area, town")
+    district: k.address1 || k.address2 || k.city || k.state || "—",
+    religion: k.religion || "Not specified",
+    createdDate: k.createdAt ? String(k.createdAt).slice(0, 10) : "",
+    staffId: k.staffId || "",
+    selfNo,
+    motherNo,
+    fatherNo,
+    guardianNo,
+    address1: k.address1 || "",
+    address2: k.address2 || "",
+    city: k.city || "",
+    state: k.state || "",
+  };
+};
 
 const toHHmm = (t?: string | null) => (t ? String(t).slice(0, 5) : "");
 
@@ -2377,6 +2426,12 @@ const getGroup = (tab: TabKey, r: AttendanceRecord): Group => {
       return { key: r.district, label: r.district, sort: r.district };
     case "religion":
       return { key: r.religion, label: r.religion, sort: r.religion };
+    case "category":
+      return {
+        key: r.category || "none",
+        label: r.category || "Not set",
+        sort: r.category || "zzz", // "Not set" goes last
+      };
     case "status":
       return {
         key: `${r.status}|${r.age}`,
@@ -2773,6 +2828,16 @@ const Phone = ({ n }: { n: string }) =>
 const Val = ({ v }: { v: string }) =>
   v ? <>{v}</> : <span className="cr-muted">—</span>;
 
+// coloured pill for a category
+const CatPill = ({ c }: { c: string }) => {
+  const col = CATEGORY_COLORS[c] ?? CATEGORY_COLORS[""];
+  return (
+    <span className="cr-pill" style={{ background: col.bg, color: col.fg }}>
+      {c || "Not set"}
+    </span>
+  );
+};
+
 // ─── Styles ─────────────────────────────────────────────────────────────
 const pageCss = `
 .cr { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: #f8f7ff; color: #111827;
@@ -2893,13 +2958,14 @@ const pageCss = `
 .cr .bl { color: #2563eb; font-weight: 600; }
 .cr .pk { color: #db2777; font-weight: 600; }
 
-/* children table (5 columns, fixed layout → no horizontal scroll) */
+/* children table (fixed layout → no horizontal scroll) */
 .cr-details { table-layout: fixed; }
 .cr-details td { padding: 0 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .cr-drow { cursor: pointer; }
 .cr-drow:nth-child(even) td { background: #fafafa; }
 .cr-drow:hover td, .cr-drow:focus-visible td { background: #faf5ff; outline: none; }
 .cr-details .c-gen { width: 110px; }
+.cr-details .c-cat { width: 120px; }
 .cr-details .c-age { width: 70px; }
 .cr-details .c-mob { width: 170px; }
 .cr-details .c-plc { width: 26%; }
@@ -2911,7 +2977,7 @@ const pageCss = `
 .cr-av { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
 .cr-ic { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .cr-ic svg { color: #7c3aed; flex-shrink: 0; }
-.cr-pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.cr-pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .cr-pill.male { background: #eff6ff; color: #2563eb; }
 .cr-pill.female { background: #fdf2f8; color: #db2777; }
 .cr-pill.unk { background: #f3f4f6; color: #6b7280; }
@@ -3229,6 +3295,14 @@ export default function ChildReports() {
       return false;
     if (filters.district && r.district !== filters.district) return false;
     if (filters.religion && r.religion !== filters.religion) return false;
+    if (filters.category) {
+      if (
+        filters.category === "none"
+          ? r.category !== ""
+          : r.category !== filters.category
+      )
+        return false;
+    }
     if (filters.gender && r.gender !== filters.gender) return false;
     if (filters.status && r.status !== filters.status) return false;
     if (filters.ageMin && r.age < Number(filters.ageMin)) return false;
@@ -3360,7 +3434,7 @@ export default function ChildReports() {
         r,
       );
     } else {
-      // age / district / religion / time: date → group
+      // age / district / religion / category / time: date → group
       const g = getGroup(activeTab, r);
       bump(dateRow(), r);
       bump(
@@ -3407,7 +3481,8 @@ export default function ChildReports() {
         (!q ||
           r.name.toLowerCase().includes(q) ||
           r.mobile.includes(q) ||
-          r.district.toLowerCase().includes(q)),
+          r.district.toLowerCase().includes(q) ||
+          r.category.toLowerCase().includes(q)),
     ),
     sortBy,
   );
@@ -3449,6 +3524,7 @@ export default function ChildReports() {
       "SL No": idx + 1,
       Name: r.name,
       Gender: r.gender,
+      Category: r.category || "Not set",
       Age: r.age,
       Standard: r.standard,
       Mobile: r.mobile,
@@ -3810,6 +3886,24 @@ export default function ChildReports() {
               </div>
               <div>
                 <div className="cr-lrow">
+                  <label className="cr-label">Category</label>
+                </div>
+                <select
+                  className="cr-select"
+                  value={filters.category}
+                  onChange={(e) => updateFilter({ category: e.target.value })}
+                >
+                  <option value="">All</option>
+                  {CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                  <option value="none">Not set</option>
+                </select>
+              </div>
+              <div>
+                <div className="cr-lrow">
                   <label className="cr-label">Gender</label>
                 </div>
                 <select
@@ -4029,7 +4123,7 @@ export default function ChildReports() {
                   <input
                     className="cr-input"
                     type="text"
-                    placeholder="Search name, mobile, place..."
+                    placeholder="Search name, mobile, place, category..."
                     value={search}
                     onChange={(e) => {
                       setSearch(e.target.value);
@@ -4069,6 +4163,7 @@ export default function ChildReports() {
                     <tr>
                       <th>Name</th>
                       <th className="c-gen">Gender</th>
+                      <th className="c-cat hide-m">Category</th>
                       <th className="c-age">Age</th>
                       <th className="c-mob">Mobile</th>
                       <th className="c-plc hide-m">Place</th>
@@ -4101,6 +4196,7 @@ export default function ChildReports() {
                                 <span className="t">{r.name}</span>
                                 <span className="cr-place-m">
                                   {r.district}
+                                  {r.category ? ` · ${r.category}` : ""}
                                   {multiDates ? ` · ${formatDate(r.date)}` : ""}
                                 </span>
                               </span>
@@ -4112,6 +4208,9 @@ export default function ChildReports() {
                             >
                               {r.gender}
                             </span>
+                          </td>
+                          <td className="hide-m">
+                            <CatPill c={r.category} />
                           </td>
                           <td>{r.age || "—"}</td>
                           <td>
@@ -4219,6 +4318,14 @@ export default function ChildReports() {
               <Card title="Personal">
                 <Row label="ID">{openRec.id}</Row>
                 <Row label="Gender">{openRec.gender}</Row>
+                <Row label="Category">
+                  <CatPill c={openRec.category} />
+                </Row>
+                {openRec.category === "Staff Kid" && (
+                  <Row label="Staff ID">
+                    <Val v={openRec.staffId} />
+                  </Row>
+                )}
                 <Row label="Age">{openRec.age || "—"}</Row>
                 <Row label="Standard">{openRec.standard}</Row>
                 <Row label="Religion">{openRec.religion}</Row>
@@ -4243,7 +4350,7 @@ export default function ChildReports() {
               </Card>
 
               <Card title="Address">
-                <Row label="Address 1">
+                <Row label="Place">
                   <Val v={openRec.address1} />
                 </Row>
                 <Row label="Address 2">

@@ -228,14 +228,14 @@ export default function Header() {
       label: "Manage",
       icon: <UsersIcon />,
       children: [
-        { href: "/addChild", label: "Add Child" },
-        { href: "/attendance", label: "Attendance" },        
-        { href: "/followUp", label: "Follow-up" },
+        { href: "/addChild", label: "Add Child" },  
+        { href: "/attendance", label: "Attendance" },
+        // { href: "/followUp", label: "Follow-up" },
         { href: "/staff", label: "Staff" },
+        { href: "/todayReport", label: "Today's Report" },
       ],
     },
     { href: "/childReport", label: "Report", icon: <ReportIcon /> },
-  
   ];
 
   const isActive = (href: string) => pathname?.startsWith(href);
@@ -457,7 +457,7 @@ export default function Header() {
               </svg>
             </div>
             <div style={{ display: "flex", flexDirection: "column" }}>
-              <p style={s.brandTitle}>JST Kids Management</p>            
+              <p style={s.brandTitle}>JST Kids Management</p>
             </div>
           </Link>
 
@@ -484,7 +484,7 @@ export default function Header() {
                         {link.icon}
                         {link.label}
                         <ChevronDownIcon isOpen={open} />
-                      </button>.
+                      </button>
                       {open && (
                         <div style={s.submenuDropdown} role="menu">
                           {children.map((sub) => (
