@@ -247,9 +247,11 @@
 //   );
 // };
 
-// // Next kidsId = highest existing JT-26-<n> + 1 (first one is JT-26-102)
+// // ─── Next kidsId ─────────────────────────────────────────────────────────
+
 // const KIDS_ID_PREFIX = "JT-26";
-// const KIDS_ID_START = 102;
+// const KIDS_ID_FIRST = 1;
+// const KIDS_ID_RE = new RegExp(`^${KIDS_ID_PREFIX}-(\\d+)$`, "i");
 
 // const generateKidsId = async (): Promise<string> => {
 //   const res = await fetch(KIDS_URL);
@@ -257,13 +259,21 @@
 //     throw new Error(await readError(res, "Could not generate the child ID"));
 //   }
 //   const kids = toArray<ApiKid>(await res.json().catch(() => []));
-//   const re = new RegExp(`^${KIDS_ID_PREFIX}-(\\d+)$`, "i");
-//   let max = KIDS_ID_START - 1;
+
+//   let max = 0;
+//   let width = 2; // JT-26-01 style when nothing exists yet
 //   kids.forEach((k) => {
-//     const m = re.exec((k.kidsId ?? "").trim());
-//     if (m) max = Math.max(max, Number(m[1]));
+//     const m = KIDS_ID_RE.exec((k.kidsId ?? "").trim());
+//     if (!m) return;
+//     const n = Number(m[1]);
+//     if (n >= max) {
+//       max = n;
+//       width = m[1].length; // keep the style of the last kid (01 / 001 / 127)
+//     }
 //   });
-//   return `${KIDS_ID_PREFIX}-${max + 1}`;
+
+//   const next = max > 0 ? max + 1 : KIDS_ID_FIRST;
+//   return `${KIDS_ID_PREFIX}-${String(next).padStart(width, "0")}`;
 // };
 
 // // ─── Local cache of today's attendance ───────────────────────────────────
@@ -626,6 +636,7 @@
 //   letter-spacing: 0.02em;
 //   vertical-align: middle;
 // }
+// .kid-id-chip.next { background: #f3f4f6; color: #6b7280; font-weight: 600; }
 // @media (max-width: 1000px) {
 //   .child-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 // }
@@ -835,6 +846,7 @@
 //   const [saveError, setSaveError] = useState("");
 //   const [saveSuccess, setSaveSuccess] = useState("");
 //   const [savedId, setSavedId] = useState(""); // kidsId of the child just saved (shown in the success banner)
+//   const [nextId, setNextId] = useState(""); // preview of the id the next new child will get
 //   const [info, setInfo] = useState("");
 //   const [photo, setPhoto] = useState<File | null>(null);
 //   const [photoPreview, setPhotoPreview] = useState("");
@@ -875,7 +887,7 @@
 //   const isEdit = editId !== null;
 //   const shownPhoto = photoPreview || existingPhoto;
 //   const placeValue = useWatch({ control, name: "address1" }) ?? "";
-//   const categoryValue = useWatch({ control, name: "category" }) ?? "";
+//   // const categoryValue = useWatch({ control, name: "category" }) ?? "";
 
 //   useEffect(() => {
 //     return () => {
@@ -886,6 +898,22 @@
 //   useEffect(() => {
 //     if (!photo && fileInputRef.current) fileInputRef.current.value = "";
 //   }, [photo]);
+
+//   // Show which id the next new child will get (re-checked after every save)
+//   useEffect(() => {
+//     if (isEdit) return;
+//     let cancelled = false;
+//     generateKidsId()
+//       .then((id) => {
+//         if (!cancelled) setNextId(id);
+//       })
+//       .catch(() => {
+//         if (!cancelled) setNextId("");
+//       });
+//     return () => {
+//       cancelled = true;
+//     };
+//   }, [isEdit, savedId]);
 
 //   const handlePhotoChange = (e: ChangeEvent<HTMLInputElement>) => {
 //     const file = e.target.files?.[0];
@@ -1183,15 +1211,31 @@
 //         return;
 //       }
 
-//       // C) New child -> generate the next JT-26-xxx id, add, then mark attendance
-//       const newKidsId = await generateKidsId();
+//       // C) New child -> read the list (GET /api/kids), take the last number
+//       //    + 1 as the new id, add, then mark attendance.
+//       //    If someone else saved at the same moment and the id is taken, the
+//       //    list is read again and the next free number is used (3 tries).
+//       let newKidsId = await generateKidsId();
 //       const payload = await buildPayload(values, newKidsId);
-//       const res = await fetch(KIDS_URL, {
-//         method: "POST",
-//         headers: { "Content-Type": "application/json" },
-//         body: JSON.stringify(payload),
-//       });
-//       if (!res.ok) throw new Error(await readError(res, "Save failed"));
+//       let res: Response | null = null;
+//       for (let attempt = 0; attempt < 3; attempt++) {
+//         payload.kidsId = newKidsId;
+//         res = await fetch(KIDS_URL, {
+//           method: "POST",
+//           headers: { "Content-Type": "application/json" },
+//           body: JSON.stringify(payload),
+//         });
+//         if (res.ok) break;
+//         const errText = await readError(res, "Save failed");
+//         const idTaken =
+//           res.status === 409 || /duplicate|already exist/i.test(errText);
+//         if (idTaken && attempt < 2) {
+//           newKidsId = await generateKidsId();
+//           continue;
+//         }
+//         throw new Error(errText);
+//       }
+//       if (!res || !res.ok) throw new Error("Save failed");
 
 //       // Use the id the server actually stored (falls back to ours)
 //       const saved = await res.json().catch(() => null);
@@ -1590,6 +1634,14 @@
 //               {isEdit && editId && (
 //                 <span className="kid-id-chip">{editId}</span>
 //               )}
+//               {!isEdit && nextId && (
+//                 <span
+//                   className="kid-id-chip next"
+//                   title="The ID the next new child will get (last ID in the list + 1)"
+//                 >
+//                   Next ID: {nextId}
+//                 </span>
+//               )}
 //             </h1>
 //           </div>
 //         </div>
@@ -1703,8 +1755,8 @@
 //                 [...CATEGORIES],
 //                 "Select category",
 //               )}
-//               {categoryValue === STAFF_CATEGORY &&
-//                 textField("staffId", "Staff ID", "Parent's staff ID")}
+//               {/* {categoryValue === STAFF_CATEGORY &&
+//                 textField("staffId", "Staff ID", "Parent's staff ID")} */}
 //               {textField("age", "Age", "e.g. 10", {
 //                 maxLength: 2,
 //                 inputMode: "numeric",
@@ -2149,13 +2201,13 @@ const findExistingChild = async (
 };
 
 // ─── Next kidsId ─────────────────────────────────────────────────────────
-// Reads the CURRENT list (GET /api/kids), finds the highest JT-26-<number>
-// and returns that number + 1. Nothing is hard-coded: if the last child is
-// JT-26-127 the next one is JT-26-128. Leading zeros are kept (JT-26-09 ->
-// JT-26-10). Only when the list has no JT-26 id at all does it start at 01.
-const KIDS_ID_PREFIX = "JT-26";
+// Format: JT-<2-digit year>-<running number>, e.g. JT-26-01 in 2026,
+// JT-27-01 in 2027. The next number is always (highest existing number
+// for that year) + 1, and restarts at 1 in a new year.
+
 const KIDS_ID_FIRST = 1;
-const KIDS_ID_RE = new RegExp(`^${KIDS_ID_PREFIX}-(\\d+)$`, "i");
+const kidsIdYear = () => String(new Date().getFullYear()).slice(-2);
+const kidsIdPrefix = () => `JST-${kidsIdYear()}`;
 
 const generateKidsId = async (): Promise<string> => {
   const res = await fetch(KIDS_URL);
@@ -2164,10 +2216,13 @@ const generateKidsId = async (): Promise<string> => {
   }
   const kids = toArray<ApiKid>(await res.json().catch(() => []));
 
+  const prefix = kidsIdPrefix();
+  const idRe = new RegExp(`^${prefix}-(\\d+)$`, "i");
+
   let max = 0;
   let width = 2; // JT-26-01 style when nothing exists yet
   kids.forEach((k) => {
-    const m = KIDS_ID_RE.exec((k.kidsId ?? "").trim());
+    const m = idRe.exec((k.kidsId ?? "").trim());
     if (!m) return;
     const n = Number(m[1]);
     if (n >= max) {
@@ -2177,7 +2232,7 @@ const generateKidsId = async (): Promise<string> => {
   });
 
   const next = max > 0 ? max + 1 : KIDS_ID_FIRST;
-  return `${KIDS_ID_PREFIX}-${String(next).padStart(width, "0")}`;
+  return `${prefix}-${String(next).padStart(width, "0")}`;
 };
 
 // ─── Local cache of today's attendance ───────────────────────────────────
@@ -2791,7 +2846,7 @@ export default function ChildAdd() {
   const isEdit = editId !== null;
   const shownPhoto = photoPreview || existingPhoto;
   const placeValue = useWatch({ control, name: "address1" }) ?? "";
-  const categoryValue = useWatch({ control, name: "category" }) ?? "";
+  // const categoryValue = useWatch({ control, name: "category" }) ?? "";
 
   useEffect(() => {
     return () => {
@@ -3659,8 +3714,8 @@ export default function ChildAdd() {
                 [...CATEGORIES],
                 "Select category",
               )}
-              {categoryValue === STAFF_CATEGORY &&
-                textField("staffId", "Staff ID", "Parent's staff ID")}
+              {/* {categoryValue === STAFF_CATEGORY &&
+                textField("staffId", "Staff ID", "Parent's staff ID")} */}
               {textField("age", "Age", "e.g. 10", {
                 maxLength: 2,
                 inputMode: "numeric",
