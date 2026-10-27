@@ -233,6 +233,7 @@ export default function Header() {
         // { href: "/followUp", label: "Follow-up" },
         { href: "/staff", label: "Staff" },
         { href: "/todayReport", label: "Today's Report" },
+        { href: "/meetingTopic", label: "Meeting Topic" },
       ],
     },
     { href: "/childReport", label: "Report", icon: <ReportIcon /> },
